@@ -19,8 +19,19 @@ dependencies = [
 [project.scripts]
 rci = "rci_cli.cli:app"
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
 [project.urls]
 Repository = "https://github.com/cizektom/rci-cli"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rci_cli"]

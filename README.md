@@ -139,8 +139,9 @@ work in the other.
 git clone git@github.com:cizektom/rci-cli.git ~/rci-cli
 cd ~/rci-cli
 python3.11 -m venv .venv && . .venv/bin/activate
-pip install -e .
+pip install -e ".[test]"
 rci --help
+pytest                # 48 tests, ~1.5s — runs fully offline
 ```
 
 Run the package without install:
@@ -148,3 +149,21 @@ Run the package without install:
 ```sh
 python -m rci_cli --help
 ```
+
+### Test layout
+
+```
+tests/
+├── conftest.py     # cfg fixture
+├── test_config.py  # TOML load + defaults + partial overrides
+├── test_alloc.py   # find_strongest + select_or_submit (GPU > CPU > submit)
+├── test_launch.py  # resolve_folder + remote-preamble templating
+├── test_slurm.py   # salloc / squeue / scancel command-string assertions
+├── test_ssh.py     # ssh argv shape (subprocess.run mocked)
+├── test_cli.py     # Typer CliRunner — version, jobs, cancel, cpu, gpu, alloc, port
+└── test_tui.py     # headless Textual mount + JobRow parser + worker-error path
+```
+
+Everything that would otherwise touch the network is monkeypatched on
+`rci_cli.ssh`, `rci_cli.slurm`, or `rci_cli.alloc` — tests run with no RCI
+connectivity required.
