@@ -242,7 +242,11 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
     def compose(self) -> ComposeResult:
         # VerticalScroll so the modal stays usable on shorter terminals — the
         # form scrolls within the box once it grows past the viewport's height.
-        with VerticalScroll(id="modal-box"):
+        # ``can_focus=False`` so Tab from the no-focus initial state skips
+        # over the scroll container and lands directly on partition-type
+        # (the user otherwise had to Tab twice). The form is short enough
+        # that arrow-key scrolling inside the container isn't needed.
+        with VerticalScroll(id="modal-box", can_focus=False):
             yield Label("[b]Resources[/b]", id="modal-title")
             yield Label("Partition")
             with Horizontal(id="partition-row"):
