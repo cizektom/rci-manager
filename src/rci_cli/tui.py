@@ -114,6 +114,24 @@ PARTITION_CLASSES: tuple[tuple[str, str], ...] = (
     ("extralong", "extralong"),
 )
 
+# Walltime is a Select (not an Input) so printable keys like ``q`` fall through
+# to the modal-level cancel binding instead of being typed into the field.
+# These covers the common cluster ranges (fast caps at 4h, normal at 24h, long
+# at ~4d, extralong at 7d); custom values via config.toml / saved state are
+# still respected — see :class:`NewInstanceModal.__init__`.
+WALLTIME_PRESETS: tuple[str, ...] = (
+    "0:30:00",
+    "1:00:00",
+    "2:00:00",
+    "4:00:00",
+    "8:00:00",
+    "12:00:00",
+    "1-00:00:00",
+    "2-00:00:00",
+    "4-00:00:00",
+    "7-00:00:00",
+)
+
 
 def assemble_partition(ptype: str, pclass: str) -> str:
     """Compose the two dropdown values into a Slurm partition name."""
@@ -236,8 +254,20 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
             yield Input(value=self._init_gpus, id="gpus", type="integer")
             yield Label("Memory (GB)")
             yield Input(value=self._init_mem, id="mem", type="integer")
-            yield Label("Walltime (HH:MM:SS)")
-            yield Input(value=self._init_time, id="time")
+            yield Label("Walltime")
+            # Select rather than Input so printable keys (e.g. ``q``) don't
+            # get typed into the field and instead fall through to the modal
+            # cancel binding. Custom values from config.toml / saved state
+            # land at the top of the list so they're still selectable.
+            time_options = list(WALLTIME_PRESETS)
+            if self._init_time and self._init_time not in time_options:
+                time_options.insert(0, self._init_time)
+            yield Select(
+                [(t, t) for t in time_options],
+                value=self._init_time,
+                id="time",
+                allow_blank=False,
+            )
             with Horizontal(id="modal-buttons"):
                 # No ``variant="primary"`` — both buttons start neutral and
                 # the focused one is highlighted via Button:focus styling, so
@@ -249,12 +279,12 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # Sync the GPUs row visibility to the restored partition type — if the
         # user's last submission was a GPU job, the field should already be visible.
         self._apply_gpu_visibility(self._init_ptype)
-        # Don't force focus — Textual's default lands on the first focusable
-        # widget (partition-type Select), so Tab walks the form naturally:
-        # partition-type → partition-class → cores → gpus → mem → time →
-        # Submit → Cancel. Submission requires Enter on the Submit button
-        # (or click); Enter inside an Input advances to the next field via
-        # the Input.Submitted handler below.
+        # Focus the Submit button so the very first Enter confirms the
+        # pre-filled defaults (last-used params or Config defaults). The form
+        # is still reachable: Shift-Tab walks backwards into Walltime → Mem →
+        # GPUs → Cores → partition-class → partition-type, which is the
+        # natural review order when checking a recurrent submission.
+        self.query_one("#ok", Button).focus()
 
     def _apply_gpu_visibility(self, ptype: str) -> None:
         is_gpu_type = ptype != "cpu"
@@ -291,7 +321,7 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
             cores = int(self.query_one("#cores", Input).value or "0")
             gpus = int(self.query_one("#gpus", Input).value or "0")
             mem_gb = int(self.query_one("#mem", Input).value or "0")
-            walltime = self.query_one("#time", Input).value.strip()
+            walltime = str(self.query_one("#time", Select).value).strip()
         except ValueError:
             self.app.notify("Invalid number", severity="error")
             return

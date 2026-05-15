@@ -256,13 +256,61 @@ async def test_folder_modal_prefills_last_folder(monkeypatch, tmp_path) -> None:
         assert folder_input.value == "sam2rl"
 
 
-async def test_new_instance_modal_q_cancels(monkeypatch, tmp_path) -> None:
-    """Pressing ``q`` on the New-Instance modal must close it with ``None``."""
+async def test_new_instance_modal_q_steps_back_when_allow_back(monkeypatch, tmp_path) -> None:
+    """With ``allow_back=True`` (folder-flow), q dismisses with the ``"back"``
+    sentinel so the caller can re-open the previous modal instead of dropping
+    the whole flow."""
     from rci_cli.tui import AllocParams, NewInstanceModal
     from rci_cli.config import Config
 
-    # Isolate persisted instance params so a prior session doesn't bleed in.
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    captured: dict[str, object] = {"result": "untouched"}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def remember(r: AllocParams | str | None) -> None:
+            captured["result"] = r
+
+        app.push_screen(NewInstanceModal(Config(), allow_back=True), remember)
+        await pilot.pause()
+        assert isinstance(app.screen, NewInstanceModal)
+        await pilot.press("q")
+        await pilot.pause()
+
+    assert captured["result"] == "back", "q with allow_back should dismiss with 'back'"
+
+
+async def test_after_new_instance_back_reopens_folder_modal(monkeypatch, tmp_path) -> None:
+    """Driving the JobsPanel callback with 'back' must push FolderModal again
+    so the user can edit the folder rather than losing the whole flow."""
+    from rci_cli.tui import FolderModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._after_new_instance("shell", "sam2rl", "back")
+        await pilot.pause()
+        assert isinstance(app.screen, FolderModal)
+
+
+async def test_new_instance_modal_q_cancels(monkeypatch, tmp_path) -> None:
+    """``q`` on a modal escapes the modal back to the jobs panel (same as
+    Escape) — it does NOT quit the app. The App's ``q``→quit fires only on
+    the main screen, since modal bindings shadow it."""
+    from rci_cli.tui import AllocParams, NewInstanceModal
+    from rci_cli.config import Config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    quit_calls: list[int] = []
+    monkeypatch.setattr(RciApp, "action_quit", lambda self: quit_calls.append(1))
 
     captured: dict[str, object] = {"params": "untouched"}
 
@@ -276,19 +324,69 @@ async def test_new_instance_modal_q_cancels(monkeypatch, tmp_path) -> None:
         app.push_screen(NewInstanceModal(Config()), remember)
         await pilot.pause()
         assert isinstance(app.screen, NewInstanceModal)
-        # Move focus off the partition Select (where 'q' might not bubble) so
-        # the test exercises the modal binding cleanly. The first Select is
-        # already a non-text widget, but pressing Tab once lands us on the
-        # second one — either way q should reach the screen binding.
         await pilot.press("q")
         await pilot.pause()
-    assert captured["params"] is None, "q should dismiss with None"
+
+    assert captured["params"] is None, "q on the modal should dismiss with None"
+    assert quit_calls == [], "q on the modal must NOT trigger app.action_quit"
 
 
-async def test_new_instance_modal_enter_submits_defaults(monkeypatch, tmp_path) -> None:
-    """Regression: pressing Enter on the New-Instance modal must submit the
-    form with its default values, even when focus is on the partition Select
-    (where Enter would otherwise just toggle the dropdown overlay)."""
+async def test_new_instance_modal_q_dismisses_from_walltime(monkeypatch, tmp_path) -> None:
+    """The walltime field is a Select (not an Input), so pressing ``q`` while
+    it's focused must fall through to the modal's cancel binding rather than
+    being typed as a character."""
+    from textual.widgets import Select
+
+    from rci_cli.tui import AllocParams, NewInstanceModal
+    from rci_cli.config import Config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    captured: dict[str, object] = {"params": "untouched"}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), lambda p: captured.update(params=p))
+        await pilot.pause()
+        # Move focus onto the walltime Select.
+        time_select = app.screen.query_one("#time", Select)
+        time_select.focus()
+        await pilot.pause()
+        assert app.focused is time_select
+        await pilot.press("q")
+        await pilot.pause()
+    assert captured["params"] is None, "q on the walltime Select should dismiss the modal"
+
+
+async def test_new_instance_modal_initial_focus_lands_on_submit(monkeypatch, tmp_path) -> None:
+    """Opening the modal must focus the Submit button so the very first Enter
+    confirms the pre-filled defaults (last-used params or Config defaults)."""
+    from textual.widgets import Button
+
+    from rci_cli.tui import NewInstanceModal
+    from rci_cli.config import Config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), lambda _p: None)
+        await pilot.pause()
+        scr = app.screen
+        assert app.focused is scr.query_one("#ok", Button), (
+            f"expected Submit button focused, got {app.focused!r}"
+        )
+
+
+async def test_new_instance_modal_submit_button_uses_defaults(monkeypatch, tmp_path) -> None:
+    """Clicking Submit on a fresh modal sends the Config defaults through.
+
+    Enter while typing in an Input no longer submits the form (would have
+    interrupted mid-edit); submission now goes via the Submit button — either
+    a click, or focus + Enter.
+    """
     from rci_cli.tui import AllocParams, NewInstanceModal
     from rci_cli.config import Config
 
@@ -308,9 +406,9 @@ async def test_new_instance_modal_enter_submits_defaults(monkeypatch, tmp_path) 
         app.push_screen(NewInstanceModal(Config()), remember)
         await pilot.pause()
         assert isinstance(app.screen, NewInstanceModal)
-        await pilot.press("enter")
+        app.screen.action_submit()
         await pilot.pause()
-    assert captured["params"] is not None, "Enter did not submit the modal"
+    assert captured["params"] is not None, "Submit did not dispatch"
     # Defaults from Config: cpu_defaults = (2, 4, "1:00:00") + cpu/fast.
     p = captured["params"]
     assert p.partition == "cpufast"
@@ -387,7 +485,11 @@ async def test_new_instance_modal_prefills_last_params(monkeypatch, tmp_path) ->
         assert scr.query_one("#cores", Input).value == "8"
         assert scr.query_one("#gpus", Input).value == "2"
         assert scr.query_one("#mem", Input).value == "32"
-        assert scr.query_one("#time", Input).value == "6:00:00"
+        # #time is a Select (not an Input) so printable keys like ``q`` fall
+        # through to the modal cancel binding. Non-preset values from saved
+        # state are dynamically added to the options list, so "6:00:00" still
+        # round-trips even though it isn't in WALLTIME_PRESETS.
+        assert scr.query_one("#time", Select).value == "6:00:00"
 
 
 async def test_new_instance_modal_submit_persists_params(monkeypatch, tmp_path) -> None:
@@ -404,7 +506,7 @@ async def test_new_instance_modal_submit_persists_params(monkeypatch, tmp_path) 
         await pilot.pause()
         app.push_screen(NewInstanceModal(Config()), lambda _p: None)
         await pilot.pause()
-        await pilot.press("enter")
+        app.screen.action_submit()
         await pilot.pause()
 
     saved = state.get_last_instance_params()
@@ -472,6 +574,39 @@ async def test_action_log_auto_clears(monkeypatch) -> None:
         # Wait past the fade window
         await pilot.pause(0.25)
         assert panel._last_action == ""
+
+
+async def test_new_instance_submit_surfaces_salloc_error_not_fake_success(monkeypatch) -> None:
+    """Regression: salloc errors must show as ``submit failed: …`` — not the
+    earlier bug where they came through as ``submitted: salloc: error: …``."""
+    from rci_cli.tui import AllocParams
+
+    error_out = (
+        "salloc: error: Job submit/allocate failed: Invalid partition name specified\n"
+    )
+    monkeypatch.setattr(
+        slurm, "submit_cpu",
+        lambda cfg, cores, mem, time, partition=None: error_out,
+    )
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._do_submit(
+            AllocParams(partition="bogus", cores=2, gpus=0, mem_gb=4, walltime="1:00:00")
+        )
+        # Let the worker thread + call_from_thread dispatch complete.
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if panel._last_action:
+                break
+
+    assert "submit failed" in panel._last_action, panel._last_action
+    assert "Invalid partition" in panel._last_action, panel._last_action
+    # The old bug surfaced "submitted: salloc: error: …" — make sure we don't.
+    assert "submitted:" not in panel._last_action, panel._last_action
 
 
 async def test_refresh_handles_squeue_failure_gracefully(monkeypatch) -> None:
