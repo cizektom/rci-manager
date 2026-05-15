@@ -239,9 +239,7 @@ class JobsPanel(Container):
         Binding("r", "refresh", "Refresh"),
         Binding("c", "cancel_job", "Cancel"),
         Binding("s", "shell_into", "Shell"),
-        Binding("S", "shell_into_tab", "Shell tab"),
         Binding("l", "claude_into", "Claude"),
-        Binding("L", "claude_into_tab", "Claude tab"),
         Binding("o", "code_into", "VS Code"),
         Binding("n", "submit_cpu", "+ CPU"),
         Binding("g", "submit_gpu", "+ GPU"),
@@ -380,19 +378,13 @@ class JobsPanel(Container):
     def action_shell_into(self) -> None:
         self._launch_on_selected("shell")
 
-    def action_shell_into_tab(self) -> None:
-        self._launch_on_selected("shell", in_tab=True)
-
     def action_claude_into(self) -> None:
         self._launch_on_selected("claude")
-
-    def action_claude_into_tab(self) -> None:
-        self._launch_on_selected("claude", in_tab=True)
 
     def action_code_into(self) -> None:
         self._launch_on_selected("code")
 
-    def _launch_on_selected(self, kind: str, *, in_tab: bool = False) -> None:
+    def _launch_on_selected(self, kind: str) -> None:
         row = self._selected_row()
         if row is None:
             self.app.notify("Nothing selected.", severity="warning")
@@ -413,25 +405,10 @@ class JobsPanel(Container):
             self._notify_action(f"opening VS Code on {row.node}")
             launch.launch_code(a, folder, cfg)
             return
-        if in_tab:
-            # No suspend needed — spawner returns immediately and the TUI keeps running.
-            rc = (
-                launch.launch_shell_in_tab(a, "", cfg)
-                if kind == "shell"
-                else launch.launch_claude_in_tab(a, "", cfg)
-            )
-            if rc == 2:
-                self.app.notify(
-                    "No supported terminal for new-tab spawn — try inside tmux, "
-                    "Windows Terminal, WezTerm, kitty, or iTerm2.",
-                    severity="warning",
-                    timeout=6,
-                )
-            else:
-                self._notify_action(f"opened new tab → {row.node} ({kind})")
-            return
-        # shell / claude: suspend the TUI so ssh has the terminal.
-        self._notify_action(f"attaching to {row.node} ({kind})… press the TUI's [b]Ctrl+C[/] to return")
+        # shell / claude: suspend the TUI so ssh has the terminal. The remote
+        # command is tmux-wrapped, so detaching with Ctrl-B D leaves the session
+        # alive on the compute node; re-pressing the key reattaches.
+        self._notify_action(f"attaching to {row.node} ({kind})… Ctrl-B D detaches, exit ends")
         with self.app.suspend():
             if kind == "shell":
                 launch.launch_shell(a, folder, cfg)

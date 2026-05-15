@@ -29,25 +29,22 @@ shadow this binary).
 
 ## Commands
 
-| command                  | replaces zsh helper       | notes                                              |
-| ------------------------ | ------------------------- | -------------------------------------------------- |
-| `rci ssh`                          | `rci` (zsh alias `ssh rci`) | interactive shell on the login host        |
-| `rci jobs`                         | `rci-list`               | `squeue -u $USER` with the friendly format    |
-| `rci cpu`                          | `rci-cpu`                | `--cores N --mem GB --time HH:MM:SS`          |
-| `rci gpu`                          | `rci-gpu`                | `--gpus N --cores N --mem GB --time HH:MM:SS` |
-| `rci cancel JOBID`                 | `rci-cancel`             |                                               |
-| `rci cancel-all`                   | `rci-cancel-all`         | confirms first                                |
-| `rci cancel-vscode`                | `rci-cancel-vscode`      | confirms first                                |
-| `rci claude [DIR] [SUFFIX] [--gpu]` | `rci-claude` / `-gpu`   | persistent zellij session, claude auto-starts |
-| `rci shell [DIR] [SUFFIX] [--gpu]`  | `rci-shell` / `-gpu`    | persistent zellij session, plain bash         |
-| `rci code [DIR] [--gpu]`           | `rci-code` / `-gpu`      | WSL → Windows `code.cmd` via `cmd.exe`        |
-| `rci alloc [--gpu]`                | `_rci_alloc`             | prints `<node> <jobid>` — scripting-friendly  |
-| `rci install-zellij`               | `rci-install-zellij`     | drop static zellij + claude layout into `~/bin` |
-| `rci sessions`                     | `rci-sessions`           | list zellij sessions on existing allocation   |
-| `rci kill-session NAME` / `--all`  | `rci-kill-session`       | kill zellij session(s) without attaching      |
-| `rci port LOCAL[:REMOTE]`          | `rci-port`               | local → compute-node port forward (Ctrl-C)    |
-| `rci tui`                          | *(new)*                  | Textual TUI — live jobs dashboard (skeleton)  |
-| `rci version`                      | -                        |                                               |
+| command                              | replaces zsh helper            | notes                                              |
+| ------------------------------------ | ------------------------------ | -------------------------------------------------- |
+| `rci ssh`                            | `rci` (zsh alias `ssh rci`)    | interactive shell on the login host                |
+| `rci jobs`                           | `rci-list`                     | `squeue -u $USER` with the friendly format         |
+| `rci cpu`                            | `rci-cpu`                      | `--cores N --mem GB --time HH:MM:SS`               |
+| `rci gpu`                            | `rci-gpu`                      | `--gpus N --cores N --mem GB --time HH:MM:SS`      |
+| `rci cancel JOBID`                   | `rci-cancel`                   |                                                    |
+| `rci cancel-all`                     | `rci-cancel-all`               | confirms first                                     |
+| `rci cancel-vscode`                  | `rci-cancel-vscode`            | confirms first                                     |
+| `rci claude [DIR] [SUFFIX] [--gpu]`  | `rci-claude` / `-gpu`          | persistent tmux session; reattaches on re-run      |
+| `rci shell  [DIR] [SUFFIX] [--gpu]`  | `rci-shell` / `-gpu`           | persistent tmux session; reattaches on re-run      |
+| `rci code   [DIR] [--gpu]`           | `rci-code` / `-gpu`            | WSL → Windows `code.cmd` via `cmd.exe`             |
+| `rci alloc  [--gpu]`                 | `_rci_alloc`                   | prints `<node> <jobid>` — scripting-friendly       |
+| `rci port LOCAL[:REMOTE]`            | -                              | local → compute-node port forward (Ctrl-C to stop) |
+| `rci tui`                            | *(new)*                        | Textual TUI dashboard (also: bare `rci`)           |
+| `rci version`                        | -                              |                                                    |
 
 **Folder argument rules** (applies to `claude`, `code`, `shell`):
 
@@ -55,35 +52,26 @@ shadow this binary).
 - relative → resolved under `/home/cizekto2` (`rci claude sam2rl` → `/home/cizekto2/sam2rl`)
 - absolute → used as-is
 
-**`--tab` / `-T` for `shell` and `claude`** opens the connection in a *new
-terminal tab* and returns immediately, so the parent `rci` (a CLI invocation
-or the running TUI) stays alive:
+### Persistent tmux sessions (claude / shell)
 
-```sh
-rci shell --tab               # opens new tab attached to the strongest alloc
-rci claude --tab sam2rl       # ditto, claude in ~/sam2rl
-```
+`rci claude` and `rci shell` each wrap the remote command in a named
+tmux session: `<kind>-<basename-of-folder>[-<suffix>]`.
 
-The TUI exposes the same with capital `S` / `L` (lowercase `s` / `l` still
-take over the current terminal). Detected terminals (priority order):
-tmux → zellij → WezTerm → kitty → Windows Terminal (WSL) → iTerm2 → Konsole.
-If nothing matches, the spawn returns rc 2 with an explanatory message.
+| invocation                       | folder                       | session name             |
+| -------------------------------- | ---------------------------- | ------------------------ |
+| `rci claude`                     | `/home/cizekto2`             | `claude-home`            |
+| `rci claude sam2rl`              | `/home/cizekto2/sam2rl`      | `claude-sam2rl`          |
+| `rci claude sam2rl exp1`         | `/home/cizekto2/sam2rl`      | `claude-sam2rl-exp1`     |
+| `rci shell  sam2rl`              | `/home/cizekto2/sam2rl`      | `shell-sam2rl`           |
 
-`--node NODE` skips the squeue lookup and targets a node directly — useful
-when re-spawning into a specific allocation; the `--tab` path uses this
-internally to keep the parent and child on the same node.
+Ssh disconnects (or laptop sleep) don't kill the work — the tmux session keeps
+running on the compute node. Re-running the same command (or pressing `s`/`l`
+on the same job in the TUI) reattaches to the running session. Detach without
+ending: `Ctrl-B D`. End the session: `exit` from inside.
 
-**Zellij sessions** (`claude` and `shell`): each launch is wrapped in a named
-zellij session — `<prefix>-<basename-of-folder>[-<suffix>]`:
-
-- `rci claude` → folder `~`, session `claude-home`
-- `rci claude sam2rl` → folder `~/sam2rl`, session `claude-sam2rl`
-- `rci claude sam2rl exp1` → folder `~/sam2rl`, session `claude-sam2rl-exp1` (parallel)
-
-ssh disconnects don't kill the session; re-running the same command attaches
-back to the running session. Run `rci install-zellij` once per cluster
-account to get the binary onto compute nodes (it's a static musl build that
-works without library hassles).
+If tmux isn't installed on the compute node, the launcher falls back to
+running the command directly (with a warning) — same UX as before, just no
+disconnect resilience.
 
 ---
 

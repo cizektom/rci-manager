@@ -104,50 +104,19 @@ def test_port_rejects_garbage() -> None:
     assert "Invalid port spec" in result.stdout
 
 
-def test_shell_with_node_skips_squeue_lookup(monkeypatch) -> None:
-    """``--node`` bypasses :func:`alloc.select_or_submit` — no squeue calls allowed."""
+def test_claude_passes_suffix_through(monkeypatch) -> None:
+    """``rci claude FOLDER SUFFIX`` propagates the suffix to ``launch_claude``."""
     captured: dict = {}
 
-    def fake_launch_shell(a, folder, cfg):
-        captured.update({"node": a.node, "jobid": a.jobid, "folder": folder})
+    def fake_launch_claude(a, folder, cfg, *, suffix=""):
+        captured.update({"node": a.node, "folder": folder, "suffix": suffix})
         return 0
 
-    def boom(*args, **kwargs):  # any allocation lookup is a bug here
-        raise AssertionError("--node should skip allocation lookup")
-
-    monkeypatch.setattr(launch, "launch_shell", fake_launch_shell)
-    monkeypatch.setattr(alloc_mod, "select_or_submit", boom)
-    result = runner.invoke(app, ["shell", "sam2rl", "--node", "n07"])
+    monkeypatch.setattr(launch, "launch_claude", fake_launch_claude)
+    monkeypatch.setattr(
+        alloc_mod, "select_or_submit",
+        lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
+    )
+    result = runner.invoke(app, ["claude", "sam2rl", "exp1"])
     assert result.exit_code == 0
-    assert captured == {"node": "n07", "jobid": "", "folder": "/home/cizekto2/sam2rl"}
-
-
-def test_shell_tab_dispatches_to_in_tab_launcher(monkeypatch) -> None:
-    """``--tab`` routes through :func:`launch_shell_in_tab` instead of the inline path."""
-    captured: dict = {}
-
-    def fake_in_tab(a, folder_arg, cfg):
-        captured.update({"node": a.node, "folder_arg": folder_arg})
-        return 0
-
-    def inline_boom(*args, **kwargs):
-        raise AssertionError("--tab should not call inline launcher")
-
-    monkeypatch.setattr(launch, "launch_shell_in_tab", fake_in_tab)
-    monkeypatch.setattr(launch, "launch_shell", inline_boom)
-    result = runner.invoke(app, ["shell", "sam2rl", "--tab", "--node", "n07"])
-    assert result.exit_code == 0
-    assert captured == {"node": "n07", "folder_arg": "sam2rl"}
-
-
-def test_claude_tab_dispatches_to_in_tab_launcher(monkeypatch) -> None:
-    captured: dict = {}
-
-    def fake_in_tab(a, folder_arg, cfg):
-        captured.update({"node": a.node, "folder_arg": folder_arg})
-        return 0
-
-    monkeypatch.setattr(launch, "launch_claude_in_tab", fake_in_tab)
-    result = runner.invoke(app, ["claude", "--tab", "--node", "g05"])
-    assert result.exit_code == 0
-    assert captured == {"node": "g05", "folder_arg": ""}
+    assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl", "suffix": "exp1"}

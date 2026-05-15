@@ -1,13 +1,18 @@
-"""Folder resolution + remote preamble for compute-node commands."""
+"""Folder resolution, session naming, and the tmux wrapping shell script.
+
+The launchers themselves shell out through :mod:`rci_cli.ssh`; here we assert
+the *shape* of the script that ends up on the wire, not actual ssh execution.
+"""
 
 from __future__ import annotations
 
-import pytest
-
-from rci_cli import launch, newtab
+from rci_cli import launch, ssh
 from rci_cli.alloc import Allocation
 from rci_cli.config import Config
-from rci_cli.launch import _remote_preamble, resolve_folder
+from rci_cli.launch import _inner_command, _tmux_wrap, resolve_folder, session_name
+
+
+# ── folder resolution ──────────────────────────────────────────────────────
 
 
 def test_resolve_folder_empty_returns_home(cfg: Config) -> None:
@@ -23,50 +28,101 @@ def test_resolve_folder_absolute_passthrough(cfg: Config) -> None:
     assert resolve_folder("/scratch/exp42", cfg) == "/scratch/exp42"
 
 
-def test_remote_preamble_sources_venv_and_cds(cfg: Config) -> None:
-    s = _remote_preamble("/home/cizekto2/sam2rl", cfg)
-    assert "cd '/home/cizekto2/sam2rl'" in s
-    assert "$HOME/sam2rl/.venv/bin/activate" in s
-    assert '$HOME/bin:$HOME/.local/bin:$PATH' in s
+# ── session names ──────────────────────────────────────────────────────────
 
 
-# ── tab-spawning launchers ──────────────────────────────────────────────────
+def test_session_name_home_is_special_cased(cfg: Config) -> None:
+    assert session_name("claude", "/home/cizekto2", home=cfg.home) == "claude-home"
+    assert session_name("shell", "/home/cizekto2/", home=cfg.home) == "shell-home"
 
 
-@pytest.fixture
-def captured_spawn(monkeypatch):
-    """Patch :func:`newtab.spawn` and capture its argv + title."""
-    seen: dict = {}
-
-    def fake_spawn(argv, *, title=None):
-        seen["argv"] = list(argv)
-        seen["title"] = title
-        return (0, "tmux")
-
-    monkeypatch.setattr(newtab, "spawn", fake_spawn)
-    return seen
+def test_session_name_uses_folder_basename(cfg: Config) -> None:
+    assert session_name("claude", "/home/cizekto2/sam2rl", home=cfg.home) == "claude-sam2rl"
+    assert session_name("shell", "/scratch/exp42", home=cfg.home) == "shell-exp42"
 
 
-def test_launch_shell_in_tab_passes_node_and_folder(cfg: Config, captured_spawn) -> None:
-    a = Allocation(node="n01", jobid="1234")
-    rc = launch.launch_shell_in_tab(a, "sam2rl", cfg)
+def test_session_name_with_suffix(cfg: Config) -> None:
+    assert (
+        session_name("claude", "/home/cizekto2/sam2rl", "exp1", home=cfg.home)
+        == "claude-sam2rl-exp1"
+    )
+
+
+# ── inner command ─────────────────────────────────────────────────────────
+
+
+def test_inner_command_cds_sources_venv_and_execs(cfg: Config) -> None:
+    s = _inner_command("/home/cizekto2/sam2rl", cfg, exec_target="claude")
+    # shlex.quote skips quoting for paths with no shell-special chars.
+    assert "cd /home/cizekto2/sam2rl" in s
+    assert cfg.venv_activate in s
+    assert "$HOME/bin:$HOME/.local/bin:$PATH" in s
+    assert "exec claude" in s
+
+
+def test_inner_command_quotes_path_with_spaces(cfg: Config) -> None:
+    s = _inner_command("/scratch/my dir", cfg, exec_target="bash -i")
+    assert "'/scratch/my dir'" in s
+
+
+# ── tmux wrapper ──────────────────────────────────────────────────────────
+
+
+def test_tmux_wrap_attaches_or_creates(cfg: Config) -> None:
+    inner = _inner_command("/home/cizekto2", cfg, exec_target="claude")
+    s = _tmux_wrap("claude-home", inner)
+    # ``tmux new-session -A -s <name>`` attaches if exists, creates with cmd if not.
+    assert "tmux new-session -A -s claude-home" in s
+    # Inner command quoted exactly once so shlex.quote round-trips through bash -lc.
+    assert "bash -lc" in s
+
+
+def test_tmux_wrap_falls_back_when_tmux_missing(cfg: Config) -> None:
+    inner = _inner_command("/home/cizekto2", cfg, exec_target="bash -i")
+    s = _tmux_wrap("shell-home", inner)
+    assert "command -v tmux" in s
+    # Fallback branch runs the inner command directly so users on tmux-less nodes
+    # still get a working session (just no disconnect resilience).
+    assert s.count("bash -lc") == 2  # one in the tmux branch, one in the fallback
+
+
+# ── launchers (mock ssh.run) ──────────────────────────────────────────────
+
+
+def _patch_ssh(monkeypatch) -> dict:
+    captured: dict = {}
+
+    def fake_run(host, cmd="", *, tty=False, check=True, stdin=None):
+        captured["host"] = host
+        captured["cmd"] = cmd
+        captured["tty"] = tty
+        return 0
+
+    monkeypatch.setattr(ssh, "run", fake_run)
+    return captured
+
+
+def test_launch_claude_wraps_in_tmux(monkeypatch, cfg: Config) -> None:
+    captured = _patch_ssh(monkeypatch)
+    rc = launch.launch_claude(Allocation(node="n01", jobid="1234"), "/home/cizekto2/sam2rl", cfg)
     assert rc == 0
-    assert captured_spawn["argv"] == ["rci", "shell", "sam2rl", "--node", "n01"]
-    assert captured_spawn["title"] == "rci shell · n01"
+    assert captured["host"] == "n01"
+    assert captured["tty"] is True
+    assert "tmux new-session -A -s claude-sam2rl" in captured["cmd"]
+    assert "exec claude" in captured["cmd"]
 
 
-def test_launch_claude_in_tab_without_folder(cfg: Config, captured_spawn) -> None:
-    a = Allocation(node="g05", jobid="5555")
-    rc = launch.launch_claude_in_tab(a, "", cfg)
+def test_launch_shell_wraps_in_tmux(monkeypatch, cfg: Config) -> None:
+    captured = _patch_ssh(monkeypatch)
+    rc = launch.launch_shell(Allocation(node="g05", jobid="5555"), "/home/cizekto2", cfg)
     assert rc == 0
-    assert captured_spawn["argv"] == ["rci", "claude", "--node", "g05"]
-    assert captured_spawn["title"] == "rci claude · g05"
+    assert "tmux new-session -A -s shell-home" in captured["cmd"]
+    assert "exec bash -i" in captured["cmd"]
 
 
-def test_launch_shell_in_tab_returns_2_when_unsupported(cfg: Config, monkeypatch) -> None:
-    def boom(argv, *, title=None):
-        raise newtab.NoSupportedTerminal("nope")
-
-    monkeypatch.setattr(newtab, "spawn", boom)
-    rc = launch.launch_shell_in_tab(Allocation(node="n01", jobid="1"), "", cfg)
-    assert rc == 2
+def test_launch_claude_with_suffix(monkeypatch, cfg: Config) -> None:
+    captured = _patch_ssh(monkeypatch)
+    launch.launch_claude(
+        Allocation(node="n01", jobid="1"), "/home/cizekto2/sam2rl", cfg, suffix="exp1"
+    )
+    assert "tmux new-session -A -s claude-sam2rl-exp1" in captured["cmd"]
