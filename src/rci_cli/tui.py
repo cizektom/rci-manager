@@ -49,12 +49,9 @@ class ConfirmModal(ModalScreen[bool]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "yes", "Yes", show=False),
-        Binding("n", "no", "No", show=False),
+        Binding("n,q", "no", "No", show=False),
         Binding("escape", "no", "Cancel", show=False),
         Binding("enter", "yes", "Confirm", show=False),
-        # ``q`` is the global exit key — forward to App.action_quit explicitly
-        # (modal screens don't fall through to App bindings on their own).
-        Binding("q", "app.quit", "Quit", show=False),
     ]
 
     def __init__(self, prompt: str, *, dangerous: bool = False) -> None:
@@ -66,11 +63,14 @@ class ConfirmModal(ModalScreen[bool]):
         with Container(id="modal-box"):
             yield Label(self.prompt, id="modal-prompt")
             with Horizontal(id="modal-buttons"):
-                yield Button(
-                    "Yes",
-                    variant="error" if self.dangerous else "primary",
-                    id="yes",
-                )
+                # Keep ``-error`` (red) for dangerous confirms — that's a
+                # safety affordance, not just a "primary action" hint. Plain
+                # confirms use the default variant so the highlight follows
+                # focus rather than locking onto Yes.
+                if self.dangerous:
+                    yield Button("Yes", variant="error", id="yes")
+                else:
+                    yield Button("Yes", id="yes")
                 yield Button("No", id="no")
 
     @on(Button.Pressed, "#yes")
@@ -166,12 +166,10 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False),
-        # ``q`` exits the app from anywhere — forward to App.action_quit
-        # (modal screens don't bubble bindings up to the App on their own).
-        # Focused Inputs still receive ``q`` as a literal character because
-        # the focused widget consumes the key before the binding fires.
-        Binding("q", "app.quit", "Quit", show=False),
+        # ``q`` escapes this window the same way ``escape`` does — closes the
+        # modal and returns to the jobs panel. App-level ``q`` (quit) only
+        # fires on the main screen because modal-screen bindings shadow it.
+        Binding("escape,q", "cancel", "Cancel", show=False),
         # No screen-level Enter binding: Enter while editing an Input would
         # otherwise submit the whole form mid-type. Submitting now requires
         # focus on the Submit button (which consumes Enter natively via
@@ -231,7 +229,10 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
             yield Label("Walltime (HH:MM:SS)")
             yield Input(value=self._init_time, id="time")
             with Horizontal(id="modal-buttons"):
-                yield Button("Submit", variant="primary", id="ok")
+                # No ``variant="primary"`` — both buttons start neutral and
+                # the focused one is highlighted via Button:focus styling, so
+                # ←/→ or Tab can shift the visible default.
+                yield Button("Submit", id="ok")
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
@@ -255,6 +256,13 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
             gpus_input.value = "0"
         elif gpus_input.value in ("", "0"):
             gpus_input.value = "1"
+
+    @on(Input.Submitted)
+    def _advance_focus(self) -> None:
+        """Enter in an Input moves focus to the next form field (standard form
+        UX). After the last Input it lands on the Submit button, where Enter
+        then submits via :meth:`_ok`."""
+        self.focus_next()
 
     @on(Button.Pressed, "#ok")
     def _ok(self) -> None:
@@ -323,9 +331,7 @@ class FolderModal(ModalScreen[str | None]):
     """Quick prompt: which folder on the compute node? Empty string = home."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False),
-        # ``q`` is the global exit key — forward to App.action_quit.
-        Binding("q", "app.quit", "Quit", show=False),
+        Binding("escape,q", "cancel", "Cancel", show=False),
     ]
 
     def __init__(self, prompt: str = "Folder on compute node") -> None:
@@ -344,7 +350,7 @@ class FolderModal(ModalScreen[str | None]):
                 placeholder="e.g. sam2rl  or  /scratch/exp42",
             )
             with Horizontal(id="modal-buttons"):
-                yield Button("Open", variant="primary", id="ok")
+                yield Button("Open", id="ok")
                 yield Button("Cancel", id="cancel")
 
     @on(Button.Pressed, "#ok")
@@ -843,12 +849,15 @@ FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
 }
 #jobs-table > .datatable--hover { background: ansi_default; }
 
-/* Modals: bordered dialog, centered, with a dim translucent backdrop so the
-   dashboard stays visible behind the popup. ``background: black 50%`` blends
-   the screen with the underlying TUI for a darken-overlay effect. */
+/* Modals: bordered dialog, centered, with a deeper translucent backdrop so
+   the dashboard reads as clearly "pushed back". Two layers do the lift:
+     1. The screen gets a darker (70%) black overlay — the dashboard is still
+        readable but visually demoted to context.
+     2. The modal box itself stays on default bg, so it pops against the
+        darkened backdrop, with a brighter cyan border to anchor the eye. */
 ConfirmModal, NewInstanceModal, FolderModal {
     align: center middle;
-    background: black 50%;
+    background: black 70%;
 }
 
 #partition-row { height: auto; padding-bottom: 1; }
@@ -858,7 +867,9 @@ ConfirmModal, NewInstanceModal, FolderModal {
 #modal-box {
     background: ansi_default;
     color: ansi_default;
-    border: round ansi_cyan;
+    border: round ansi_bright_cyan;
+    border-title-color: ansi_bright_cyan;
+    border-title-style: bold;
     padding: 1 2;
     width: 60;
     height: auto;
