@@ -198,15 +198,16 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # for cores/mem/gpus would silently swallow ``q`` as a rejected
         # character and the user couldn't back out of the form).
         Binding("escape,q", "cancel", "Cancel", show=False, priority=True),
-        # Enter is a priority binding so it works from any focused widget,
-        # but :meth:`action_submit` routes intelligently:
-        #   - on a Select → open the dropdown (preserves Enter-to-pick UX)
-        #   - on Cancel button → abort
-        #   - on Submit button / Input / unfocused → submit the form
-        # Result: Enter on partition-type opens the partition picker;
-        # Enter on Cores/Memory/etc. submits; Enter inside an open Select
+        # Enter is *not* priority — focused widgets must keep their native
+        # Enter handling so the open Select overlay (a Widget, not a Screen)
+        # can still confirm the highlighted option. The screen binding only
+        # fires when nothing inside the modal has focus, i.e. the "modal just
+        # opened" state, which is exactly when we want to submit the
+        # prefilled defaults. Inputs handle Enter natively by emitting
+        # ``Input.Submitted`` — see :meth:`_advance_focus` for the
+        # advance-to-next-field behavior.
         # overlay confirms the highlighted option (its own screen handles it).
-        Binding("enter", "submit", "Submit", show=False, priority=True),
+        Binding("enter", "submit", "Submit", show=False),
     ]
 
     def __init__(self, cfg: Config, *, allow_back: bool = False) -> None:
@@ -237,7 +238,14 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         self._init_cores = str(cores) if isinstance(cores, int) and cores > 0 else str(cpu_cores)
         self._init_gpus = str(gpus) if isinstance(gpus, int) and gpus >= 0 else "0"
         self._init_mem = str(mem_gb) if isinstance(mem_gb, int) and mem_gb > 0 else str(cpu_mem)
-        self._init_time = walltime if isinstance(walltime, str) and walltime else cpu_time
+        # Accept saved walltime only if it's a known-good value (preset or the
+        # current config default). Drops garbage like ``"0:00:10"`` left over
+        # from when this field was a free-form Input — Slurm parses ``H:MM:SS``
+        # so 10 seconds rounds up to the 1-minute minimum, silently shrinking
+        # the user's intended limit. Anything unrecognised falls back to the
+        # config default and won't be re-persisted on submit.
+        valid_times = set(WALLTIME_PRESETS) | {cpu_time}
+        self._init_time = walltime if isinstance(walltime, str) and walltime in valid_times else cpu_time
 
     def compose(self) -> ComposeResult:
         # VerticalScroll so the modal stays usable on shorter terminals — the
@@ -327,25 +335,12 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         self._do_submit()
 
     def action_submit(self) -> None:
-        # Enter routing — depends on what's focused:
-        #   no focus / screen itself → submit defaults (the "open + Enter" path)
-        #   Select                   → open its dropdown so the user can pick
-        #   Input                    → advance to the next field (like Tab)
-        #   Cancel button            → abort the modal
-        #   Submit (or other) button → submit the form
-        focused = self.focused
-        if focused is None or focused is self:
-            self._do_submit()
-            return
-        if isinstance(focused, Select):
-            focused.action_show_overlay()
-            return
-        if isinstance(focused, Button):
-            if getattr(focused, "id", "") == "cancel":
-                self.action_cancel()
-                return
-            self._do_submit()
-            return
+        # Without ``priority=True`` on the Enter binding, this action only
+        # fires when no inner widget claims Enter — i.e. the "modal just
+        # opened, no focus" state. Other Enter cases (Select dropdown,
+        # Input.Submitted, Button.Pressed) are handled natively by the
+        # focused widget. So this is straightforward: submit the defaults.
+        self._do_submit()
         # Input (numeric fields) → step to the next focusable widget.
         self.focus_next()
 
