@@ -892,6 +892,9 @@ class RciApp(App):
         # Use the terminal's own palette so the TUI sits in the same color
         # world as the user's shell prompt and lazygit. ``t`` cycles to dark.
         self.theme = "ansi-dark"
+        # Textual's Header ships a ``⭘`` icon in the top-left — clickable toggle
+        # for the clock that just adds visual noise here. Blank it out.
+        self.query_one(Header).icon = ""
 
     def action_toggle_theme(self) -> None:
         # Minimal cycle: stick with the terminal palette by default, fall back
