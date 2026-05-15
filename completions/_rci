@@ -1,0 +1,80 @@
+#compdef rci
+# Hand-crafted zsh completion for rci-cli.
+# Replaces the auto-generated Typer completion with grouped sections,
+# per-subcommand flag completion, and (where helpful) value suggestions.
+
+_rci() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '(-h --help)'{-h,--help}'[Show help message and exit]' \
+        '--install-completion[Install shell completion for the current shell]' \
+        '--show-completion[Show the completion script for the current shell]' \
+        '1: :->command' \
+        '*::arg:->args'
+
+    case $state in
+        command)
+            local -a allocation jobs_actions interactive utility
+            allocation=(
+                'cpu:Submit a CPU vscode allocation (cpufast)'
+                'gpu:Submit a GPU vscode-gpu allocation (gpufast)'
+                'alloc:Print <node> <jobid> of current allocation'
+            )
+            jobs_actions=(
+                'jobs:List your Slurm jobs (squeue)'
+                'cancel:Cancel a specific job by ID'
+                'cancel-all:Cancel ALL your jobs (with confirmation)'
+                'cancel-vscode:Cancel all vscode + vscode-gpu jobs'
+            )
+            interactive=(
+                'ssh:Open a shell on the RCI login host'
+                'shell:Interactive bash on the compute node'
+                'claude:Run claude on the compute node'
+                'code:Open VS Code Remote-SSH on the compute node'
+                'tui:Launch the interactive TUI'
+            )
+            utility=(
+                'version:Print rci-cli version'
+            )
+            _describe -t allocation 'allocation' allocation
+            _describe -t jobs 'jobs' jobs_actions
+            _describe -t interactive 'interactive' interactive
+            _describe -t utility 'utility' utility
+            ;;
+        args)
+            case $line[1] in
+                cpu)
+                    _arguments \
+                        '(-c --cores)'{-c,--cores}'[CPU cores]:cores:(2 4 8 16 32)' \
+                        '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(8 16 32 64 128)' \
+                        '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)'
+                    ;;
+                gpu)
+                    _arguments \
+                        '(-g --gpus)'{-g,--gpus}'[number of GPUs]:gpus:(1 2 4 8)' \
+                        '(-c --cores)'{-c,--cores}'[CPU cores]:cores:(4 8 16 32)' \
+                        '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(16 32 64 128 256)' \
+                        '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)'
+                    ;;
+                claude|code|shell)
+                    _arguments \
+                        '--gpu[require a GPU allocation]' \
+                        '1:remote folder (empty=/home/cizekto2, relative→under home, absolute→as-is): '
+                    ;;
+                alloc)
+                    _arguments '--gpu[require a GPU allocation]'
+                    ;;
+                cancel)
+                    _arguments '1:job id: '
+                    ;;
+                cancel-all|cancel-vscode|jobs|ssh|tui|version)
+                    # no further args
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_rci "$@"
