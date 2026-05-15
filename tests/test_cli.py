@@ -57,7 +57,7 @@ def test_cpu_passes_defaults_to_submit(monkeypatch) -> None:
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
     result = runner.invoke(app, ["cpu"])
     assert result.exit_code == 0
-    assert seen == {"cores": 4, "mem": 16, "walltime": "4:00:00"}
+    assert seen == {"cores": 2, "mem": 4, "walltime": "1:00:00"}
 
 
 def test_cpu_flags_override_defaults(monkeypatch) -> None:
@@ -85,7 +85,7 @@ def test_gpu_defaults(monkeypatch) -> None:
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
     result = runner.invoke(app, ["gpu"])
     assert result.exit_code == 0
-    assert seen == {"gpus": 1, "cores": 8, "mem": 32, "walltime": "4:00:00"}
+    assert seen == {"gpus": 1, "cores": 2, "mem": 8, "walltime": "1:00:00"}
 
 
 def test_alloc_prints_node_and_jobid(monkeypatch) -> None:

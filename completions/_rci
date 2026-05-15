@@ -48,15 +48,15 @@ _rci() {
                 cpu)
                     _arguments \
                         '(-c --cores)'{-c,--cores}'[CPU cores]:cores:(2 4 8 16 32)' \
-                        '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(8 16 32 64 128)' \
-                        '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)'
+                        '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(4 8 16 32 64 128)' \
+                        '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(0:30:00 1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)'
                     ;;
                 gpu)
                     _arguments \
                         '(-g --gpus)'{-g,--gpus}'[number of GPUs]:gpus:(1 2 4 8)' \
-                        '(-c --cores)'{-c,--cores}'[CPU cores]:cores:(4 8 16 32)' \
-                        '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(16 32 64 128 256)' \
-                        '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)'
+                        '(-c --cores)'{-c,--cores}'[CPU cores]:cores:(2 4 8 16 32)' \
+                        '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(8 16 32 64 128 256)' \
+                        '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(0:30:00 1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)'
                     ;;
                 claude|code|shell)
                     _arguments \

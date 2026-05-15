@@ -18,8 +18,9 @@ def test_defaults_match_zsh_helpers() -> None:
     assert c.gpu_partition == "gpufast"
     assert c.cpu_job_name == "vscode"
     assert c.gpu_job_name == "vscode-gpu"
-    assert c.cpu_defaults == (4, 16, "4:00:00")
-    assert c.gpu_defaults == (1, 8, 32, "4:00:00")
+    # Conservative debug defaults — see config.py for the rationale.
+    assert c.cpu_defaults == (2, 4, "1:00:00")
+    assert c.gpu_defaults == (1, 2, 8, "1:00:00")
 
 
 def test_load_with_no_config_file_returns_defaults(monkeypatch, tmp_path: Path) -> None:
@@ -36,7 +37,7 @@ def test_load_partial_override(monkeypatch, tmp_path: Path) -> None:
     assert loaded.home == "/home/other-user"
     # Untouched fields keep their defaults
     assert loaded.ssh_host == "rci"
-    assert loaded.cpu_defaults == (4, 16, "4:00:00")
+    assert loaded.cpu_defaults == (2, 4, "1:00:00")
 
 
 def test_load_list_fields_become_tuples(monkeypatch, tmp_path: Path) -> None:

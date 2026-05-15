@@ -15,8 +15,10 @@ class Config:
     gpu_partition: str = "gpufast"
     cpu_job_name: str = "vscode"
     gpu_job_name: str = "vscode-gpu"
-    cpu_defaults: tuple[int, int, str] = (4, 16, "4:00:00")  # cores, memGB, walltime
-    gpu_defaults: tuple[int, int, int, str] = (1, 8, 32, "4:00:00")  # gpus, cores, memGB, walltime
+    # Conservative debug defaults — schedule fast, don't burn quota if you forget one.
+    # Override per-allocation with --cores/--mem/--time or globally in ~/.config/rci-cli/config.toml.
+    cpu_defaults: tuple[int, int, str] = (2, 4, "1:00:00")  # cores, memGB, walltime
+    gpu_defaults: tuple[int, int, int, str] = (1, 2, 8, "1:00:00")  # gpus, cores, memGB, walltime
     venv_activate: str = "$HOME/sam2rl/.venv/bin/activate"
 
 

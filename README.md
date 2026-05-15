@@ -82,8 +82,8 @@ cpu_partition = "cpufast"
 gpu_partition = "gpufast"
 cpu_job_name = "vscode"
 gpu_job_name = "vscode-gpu"
-cpu_defaults = [4, 16, "4:00:00"]            # cores, memGB, walltime
-gpu_defaults = [1, 8, 32, "4:00:00"]         # gpus, cores, memGB, walltime
+cpu_defaults = [2, 4, "1:00:00"]             # cores, memGB, walltime (conservative debug-friendly)
+gpu_defaults = [1, 2, 8, "1:00:00"]          # gpus, cores, memGB, walltime
 venv_activate = "$HOME/sam2rl/.venv/bin/activate"
 ```
 
