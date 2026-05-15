@@ -8,12 +8,13 @@ allocation management, batch script editing) in a Textual TUI.
 ```sh
 git clone git@github.com:cizektom/rci-cli.git ~/rci-cli
 uv tool install --python 3.11 ~/rci-cli   # or: pipx install ~/rci-cli
-rci-cli --help
+rci --help
 ```
 
-> The binary is `rci-cli` (not `rci`) so it doesn't collide with the existing
-> `alias rci='ssh rci'` from [zsh-setup](https://github.com/cizektom/zsh-setup).
-> `rci-cli ssh-login` and `rci-cli ssh` end up at the same shell.
+The binary is named `rci`. If you previously used the
+[zsh-setup](https://github.com/cizektom/zsh-setup) `alias rci='ssh rci'`,
+remove it — `rci ssh` now does the same thing (and the alias would otherwise
+shadow this binary).
 
 ---
 
@@ -30,24 +31,24 @@ rci-cli --help
 
 | command                  | replaces zsh helper       | notes                                              |
 | ------------------------ | ------------------------- | -------------------------------------------------- |
-| `rci-cli ssh`            | `rci` (zsh alias for `ssh rci`) | interactive shell on the login host          |
-| `rci-cli jobs`               | `rci-list`                | `squeue -u $USER` with the friendly format         |
-| `rci-cli cpu`                | `rci-cpu`                 | `--cores N --mem GB --time HH:MM:SS`               |
-| `rci-cli gpu`                | `rci-gpu`                 | `--gpus N --cores N --mem GB --time HH:MM:SS`      |
-| `rci-cli cancel JOBID`       | `rci-cancel`              |                                                    |
-| `rci-cli cancel-all`         | `rci-cancel-all`          | confirms first                                     |
-| `rci-cli cancel-vscode`      | `rci-cancel-vscode`       | confirms first                                     |
-| `rci-cli claude [DIR] [--gpu]` | `rci-claude` / `-gpu`   | folder rules below                                 |
-| `rci-cli code [DIR] [--gpu]`   | `rci-code` / `-gpu`     | WSL → Windows `code.cmd` via `cmd.exe`             |
-| `rci-cli shell [DIR] [--gpu]`  | *(new)*                 | interactive bash on the compute node               |
-| `rci-cli alloc [--gpu]`        | `_rci_alloc`            | prints `<node> <jobid>` — scripting-friendly       |
-| `rci-cli tui`                  | *(new)*                 | Textual TUI — live jobs dashboard (skeleton)       |
-| `rci-cli version`              | -                       |                                                    |
+| `rci ssh`            | `rci` (zsh alias for `ssh rci`) | interactive shell on the login host          |
+| `rci jobs`               | `rci-list`                | `squeue -u $USER` with the friendly format         |
+| `rci cpu`                | `rci-cpu`                 | `--cores N --mem GB --time HH:MM:SS`               |
+| `rci gpu`                | `rci-gpu`                 | `--gpus N --cores N --mem GB --time HH:MM:SS`      |
+| `rci cancel JOBID`       | `rci-cancel`              |                                                    |
+| `rci cancel-all`         | `rci-cancel-all`          | confirms first                                     |
+| `rci cancel-vscode`      | `rci-cancel-vscode`       | confirms first                                     |
+| `rci claude [DIR] [--gpu]` | `rci-claude` / `-gpu`   | folder rules below                                 |
+| `rci code [DIR] [--gpu]`   | `rci-code` / `-gpu`     | WSL → Windows `code.cmd` via `cmd.exe`             |
+| `rci shell [DIR] [--gpu]`  | *(new)*                 | interactive bash on the compute node               |
+| `rci alloc [--gpu]`        | `_rci_alloc`            | prints `<node> <jobid>` — scripting-friendly       |
+| `rci tui`                  | *(new)*                 | Textual TUI — live jobs dashboard (skeleton)       |
+| `rci version`              | -                       |                                                    |
 
 **Folder argument rules** (applies to `claude`, `code`, `shell`):
 
 - omitted → `/home/cizekto2`
-- relative → resolved under `/home/cizekto2` (`rci-cli claude sam2rl` → `/home/cizekto2/sam2rl`)
+- relative → resolved under `/home/cizekto2` (`rci claude sam2rl` → `/home/cizekto2/sam2rl`)
 - absolute → used as-is
 
 ---
@@ -110,7 +111,7 @@ work in the other.
 - [ ] In-TUI cancel / submit / attach actions.
 - [ ] Log tailing for running jobs (`sattach` or remote `tail -F`).
 - [ ] GPU/CPU utilization snapshot on the active node.
-- [ ] Saved allocation profiles (`rci-cli profile use ml-train`).
+- [ ] Saved allocation profiles (`rci profile use ml-train`).
 - [ ] Batch script editor (`sbatch` flow alongside the salloc flow).
 - [ ] Optional non-RCI Slurm clusters via config profile switching.
 
@@ -123,7 +124,7 @@ git clone git@github.com:cizektom/rci-cli.git ~/rci-cli
 cd ~/rci-cli
 python3.11 -m venv .venv && . .venv/bin/activate
 pip install -e .
-rci-cli --help
+rci --help
 ```
 
 Run the package without install:
