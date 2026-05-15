@@ -469,7 +469,9 @@ class JobsPanel(Container):
                 f"[green b]●[/] allocation: [b]{alloc.node}[/]  job [b]{alloc.jobid}[/]"
             )
         else:
-            status.update("[yellow]○[/yellow] no running vscode allocation — press [b]n[/] or [b]g[/] to submit")
+            status.update(
+                "[yellow]○[/yellow] no running allocation — press [b]n[/] to submit one"
+            )
         # Clear the "refreshing…" indicator if a manual refresh just completed.
         # Other action messages stay until their own fade timer fires.
         if self._last_action == "refreshing…":
