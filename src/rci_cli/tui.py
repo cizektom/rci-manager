@@ -555,8 +555,8 @@ Tab.-active { color: ansi_cyan; text-style: bold; }
 }
 #jobs-table > .datatable--hover { background: ansi_default; }
 
-/* Modals: bordered dialog, lazygit-style centered popup. */
-ConfirmModal, SubmitCpuModal, SubmitGpuModal { align: center middle; }
+/* Modals: bordered dialog, centered in the TUI viewport. */
+ConfirmModal, NewInstanceModal { align: center middle; }
 
 #modal-box {
     background: ansi_default;
@@ -565,8 +565,12 @@ ConfirmModal, SubmitCpuModal, SubmitGpuModal { align: center middle; }
     padding: 1 2;
     width: 60;
     height: auto;
-    max-height: 24;
+    max-height: 30;
 }
+
+/* RadioSet at the top of NewInstanceModal — keep it tight, horizontal feel. */
+#modal-box RadioSet { border: none; padding: 0 0 1 0; height: auto; }
+#modal-box RadioSet > RadioButton { padding: 0 2 0 0; }
 
 #modal-title, #modal-prompt {
     padding-bottom: 1;
