@@ -30,8 +30,8 @@ _rci() {
             )
             interactive=(
                 'ssh:Open a shell on the RCI login host'
-                'shell:Interactive bash on the compute node (persistent tmux)'
-                'code:Open VS Code Remote-SSH on the compute node'
+                'shell:Interactive bash on the compute node'
+                'editor:Open VS Code Remote-SSH on the compute node'
                 'tui:Launch the interactive TUI'
             )
             utility=(
@@ -57,16 +57,10 @@ _rci() {
                         '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(8 16 32 64 128 256)' \
                         '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(0:30:00 1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)'
                     ;;
-                code)
+                editor|shell)
                     _arguments \
                         '--gpu[require a GPU allocation]' \
                         '1:remote folder (empty=/home/cizekto2, relative→under home, absolute→as-is): '
-                    ;;
-                shell)
-                    _arguments \
-                        '--gpu[require a GPU allocation]' \
-                        '1:remote folder (empty=/home/cizekto2, relative→under home, absolute→as-is): ' \
-                        '2:tmux session suffix (optional, for parallel sessions): '
                     ;;
                 alloc)
                     _arguments '--gpu[require a GPU allocation]'

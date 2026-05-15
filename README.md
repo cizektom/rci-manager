@@ -38,40 +38,40 @@ shadow this binary).
 | `rci cancel JOBID`                   | `rci-cancel`                   |                                                    |
 | `rci cancel-all`                     | `rci-cancel-all`               | confirms first                                     |
 | `rci cancel-vscode`                  | `rci-cancel-vscode`            | confirms first                                     |
-| `rci shell  [DIR] [SUFFIX] [--gpu]`  | `rci-shell` / `-gpu`           | persistent tmux session; reattaches on re-run      |
-| `rci code   [DIR] [--gpu]`           | `rci-code` / `-gpu`            | WSL → Windows `code.cmd` via `cmd.exe`             |
+| `rci shell  [DIR] [--gpu]`           | `rci-shell` / `-gpu`           | interactive bash on the compute node               |
+| `rci editor [DIR] [--gpu]`           | `rci-code` / `-gpu`            | VS Code Remote-SSH (WSL → Windows `code.cmd`)      |
 | `rci alloc  [--gpu]`                 | `_rci_alloc`                   | prints `<node> <jobid>` — scripting-friendly       |
 | `rci port LOCAL[:REMOTE]`            | -                              | local → compute-node port forward (Ctrl-C to stop) |
 | `rci tui`                            | *(new)*                        | Textual TUI dashboard (also: bare `rci`)           |
 | `rci version`                        | -                              |                                                    |
 
-**Folder argument rules** (applies to `code`, `shell`):
+**Folder argument rules** (applies to `editor`, `shell`):
 
 - omitted → `/home/cizekto2`
 - relative → resolved under `/home/cizekto2` (`rci shell sam2rl` → `/home/cizekto2/sam2rl`)
 - absolute → used as-is
 
-### Persistent tmux sessions (shell)
+Run `claude` (or any other tool) directly from inside `rci shell`. Persistence
+across ssh disconnect isn't wrapped at the rci-cli layer right now — re-introduce
+when the rest of the UX is settled.
 
-`rci shell` wraps the remote bash in a named tmux session:
-`shell-<basename-of-folder>[-<suffix>]`.
+### TUI dashboard
 
-| invocation                | folder                       | session name             |
-| ------------------------- | ---------------------------- | ------------------------ |
-| `rci shell`               | `/home/cizekto2`             | `shell-home`             |
-| `rci shell sam2rl`        | `/home/cizekto2/sam2rl`      | `shell-sam2rl`           |
-| `rci shell sam2rl exp1`   | `/home/cizekto2/sam2rl`      | `shell-sam2rl-exp1`      |
+Bare `rci` opens the Jobs dashboard. One-key actions:
 
-Ssh disconnects (or laptop sleep) don't kill the work — the tmux session keeps
-running on the compute node. Re-running the same command (or pressing `s` on
-the same job in the TUI) reattaches to the running session. Detach without
-ending: `Ctrl-B D`. End the session: `exit` from inside.
+| key | what it does |
+|-----|--------------|
+| `s` | Shell into the strongest running allocation. **If none exists, opens the New Instance modal** — configure (CPU/GPU, partition, cores, mem, walltime), submit, then auto-attaches once the job starts. |
+| `e` | Same as `s` but launches the editor (VS Code Remote-SSH) instead. |
+| `n` | Opens the New Instance modal without auto-attaching — just submit and return to the dashboard. |
+| `c` | Cancel the highlighted job (confirmation modal). |
+| `r` | Force-refresh the table (also auto-refreshes every 5s). |
+| `t` | Cycle theme (escape hatch if `ansi-dark` looks bad on a given terminal). |
+| `q` | Quit. |
 
-Run `claude` directly from inside the shell session — it gets the same
-disconnect resilience for free (`Ctrl-B D` leaves it thinking; reattach later).
-
-If tmux isn't installed on the compute node, the launcher falls back to a
-plain bash (with a warning) — same UX, just no disconnect resilience.
+The New Instance modal has a CPU/GPU toggle at the top — switching swaps the
+partition default (`cpufast` ↔ `gpufast`), shows/hides the GPUs field, and
+re-prefills the numeric defaults from `cfg.cpu_defaults` / `cfg.gpu_defaults`.
 
 ---
 

@@ -167,32 +167,25 @@ def cancel_vscode() -> None:
 
 
 @app.command()
-def code(
+def editor(
     folder: Annotated[str, typer.Argument()] = "",
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
 ) -> None:
-    """Open VS Code Remote-SSH on the strongest existing vscode allocation."""
+    """Open the configured editor (VS Code Remote-SSH) on the strongest existing allocation."""
     cfg = _cfg()
     a = _require_alloc(cfg, require_gpu=gpu)
-    sys.exit(launch.launch_code(a, launch.resolve_folder(folder, cfg), cfg))
+    sys.exit(launch.launch_editor(a, launch.resolve_folder(folder, cfg), cfg))
 
 
 @app.command()
 def shell(
     folder: Annotated[str, typer.Argument()] = "",
-    suffix: Annotated[
-        str,
-        typer.Argument(help="optional suffix for the tmux session name (parallel sessions)"),
-    ] = "",
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
 ) -> None:
-    """Interactive bash on the compute node inside a persistent tmux session.
-
-    Re-running the same command attaches back to the running session.
-    """
+    """Interactive bash on the compute node."""
     cfg = _cfg()
     a = _require_alloc(cfg, require_gpu=gpu)
-    sys.exit(launch.launch_shell(a, launch.resolve_folder(folder, cfg), cfg, suffix=suffix))
+    sys.exit(launch.launch_shell(a, launch.resolve_folder(folder, cfg), cfg))
 
 
 @app.command()

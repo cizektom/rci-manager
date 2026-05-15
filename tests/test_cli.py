@@ -104,12 +104,11 @@ def test_port_rejects_garbage() -> None:
     assert "Invalid port spec" in result.stdout
 
 
-def test_shell_passes_suffix_through(monkeypatch) -> None:
-    """``rci shell FOLDER SUFFIX`` propagates the suffix to ``launch_shell``."""
+def test_shell_uses_strongest_alloc(monkeypatch) -> None:
     captured: dict = {}
 
-    def fake_launch_shell(a, folder, cfg, *, suffix=""):
-        captured.update({"node": a.node, "folder": folder, "suffix": suffix})
+    def fake_launch_shell(a, folder, cfg):
+        captured.update({"node": a.node, "folder": folder})
         return 0
 
     monkeypatch.setattr(launch, "launch_shell", fake_launch_shell)
@@ -117,6 +116,23 @@ def test_shell_passes_suffix_through(monkeypatch) -> None:
         alloc_mod, "select_or_submit",
         lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
     )
-    result = runner.invoke(app, ["shell", "sam2rl", "exp1"])
+    result = runner.invoke(app, ["shell", "sam2rl"])
     assert result.exit_code == 0
-    assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl", "suffix": "exp1"}
+    assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl"}
+
+
+def test_editor_runs_for_known_alloc(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_launch_editor(a, folder, cfg):
+        captured.update({"node": a.node, "folder": folder})
+        return 0
+
+    monkeypatch.setattr(launch, "launch_editor", fake_launch_editor)
+    monkeypatch.setattr(
+        alloc_mod, "select_or_submit",
+        lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
+    )
+    result = runner.invoke(app, ["editor", "sam2rl"])
+    assert result.exit_code == 0
+    assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl"}

@@ -28,6 +28,8 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    RadioButton,
+    RadioSet,
     Static,
     TabbedContent,
     TabPane,
@@ -90,103 +92,106 @@ class ConfirmModal(ModalScreen[bool]):
 
 
 @dataclass(frozen=True)
-class CpuParams:
+class AllocParams:
+    """Result of :class:`NewInstanceModal`. Carries everything ``slurm.submit_*`` needs."""
+
+    kind: str  # "cpu" or "gpu"
+    partition: str
     cores: int
-    mem: int
+    mem_gb: int
     walltime: str
+    gpus: int = 0  # only meaningful when kind == "gpu"
 
 
-@dataclass(frozen=True)
-class GpuParams:
-    gpus: int
-    cores: int
-    mem: int
-    walltime: str
+class NewInstanceModal(ModalScreen[AllocParams | None]):
+    """Single configure-and-submit modal for both CPU and GPU allocations.
 
-
-class SubmitCpuModal(ModalScreen[CpuParams | None]):
-    """Submit-CPU dialog. Inputs prefilled from ``cfg.cpu_defaults``."""
+    Top radio toggles kind; switching kind swaps the partition default and
+    shows/hides the GPUs field. All numeric values prefilled from the relevant
+    ``cfg.cpu_defaults`` / ``cfg.gpu_defaults`` tuple.
+    """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, *, initial_kind: str = "cpu") -> None:
         super().__init__()
         self.cfg = cfg
+        self._kind = initial_kind
 
     def compose(self) -> ComposeResult:
-        cores, mem, time = self.cfg.cpu_defaults
+        cpu_cores, cpu_mem, cpu_time = self.cfg.cpu_defaults
+        gpu_count, gpu_cores, gpu_mem, gpu_time = self.cfg.gpu_defaults
         with Container(id="modal-box"):
-            yield Label("[b]Submit CPU allocation[/b] (partition: cpufast)", id="modal-title")
-            yield Label("Cores")
-            yield Input(value=str(cores), id="cores", type="integer")
-            yield Label("Memory (GB)")
-            yield Input(value=str(mem), id="mem", type="integer")
-            yield Label("Walltime (HH:MM:SS)")
-            yield Input(value=time, id="time")
-            with Horizontal(id="modal-buttons"):
-                yield Button("Submit", variant="primary", id="ok")
-                yield Button("Cancel", id="cancel")
-
-    @on(Button.Pressed, "#ok")
-    @on(Input.Submitted)
-    def _ok(self) -> None:
-        try:
-            params = CpuParams(
-                cores=int(self.query_one("#cores", Input).value or "0"),
-                mem=int(self.query_one("#mem", Input).value or "0"),
-                walltime=self.query_one("#time", Input).value.strip(),
+            yield Label("[b]New instance[/b]", id="modal-title")
+            with RadioSet(id="kind"):
+                yield RadioButton("CPU", value=(self._kind == "cpu"), id="kind-cpu")
+                yield RadioButton("GPU", value=(self._kind == "gpu"), id="kind-gpu")
+            yield Label("Partition")
+            yield Input(
+                value=self.cfg.cpu_partition if self._kind == "cpu" else self.cfg.gpu_partition,
+                id="partition",
             )
-        except ValueError:
-            self.app.notify("Invalid number", severity="error")
-            return
-        self.dismiss(params)
-
-    @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class SubmitGpuModal(ModalScreen[GpuParams | None]):
-    """Submit-GPU dialog. Inputs prefilled from ``cfg.gpu_defaults``."""
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False),
-    ]
-
-    def __init__(self, cfg: Config) -> None:
-        super().__init__()
-        self.cfg = cfg
-
-    def compose(self) -> ComposeResult:
-        gpus, cores, mem, time = self.cfg.gpu_defaults
-        with Container(id="modal-box"):
-            yield Label("[b]Submit GPU allocation[/b] (partition: gpufast)", id="modal-title")
-            yield Label("GPUs")
-            yield Input(value=str(gpus), id="gpus", type="integer")
+            # GPU count — only relevant when kind == "gpu"; we toggle the row's
+            # display on radio change rather than re-composing.
+            yield Label("GPUs", id="gpus-label")
+            yield Input(value=str(gpu_count), id="gpus", type="integer")
             yield Label("Cores")
-            yield Input(value=str(cores), id="cores", type="integer")
+            yield Input(
+                value=str(cpu_cores if self._kind == "cpu" else gpu_cores),
+                id="cores",
+                type="integer",
+            )
             yield Label("Memory (GB)")
-            yield Input(value=str(mem), id="mem", type="integer")
+            yield Input(
+                value=str(cpu_mem if self._kind == "cpu" else gpu_mem),
+                id="mem",
+                type="integer",
+            )
             yield Label("Walltime (HH:MM:SS)")
-            yield Input(value=time, id="time")
+            yield Input(value=cpu_time if self._kind == "cpu" else gpu_time, id="time")
             with Horizontal(id="modal-buttons"):
                 yield Button("Submit", variant="primary", id="ok")
                 yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self._apply_kind_visibility()
+
+    def _apply_kind_visibility(self) -> None:
+        is_gpu = self._kind == "gpu"
+        self.query_one("#gpus-label", Label).display = is_gpu
+        self.query_one("#gpus", Input).display = is_gpu
+
+    @on(RadioSet.Changed, "#kind")
+    def _kind_changed(self, event: RadioSet.Changed) -> None:
+        new_kind = "gpu" if event.pressed.id == "kind-gpu" else "cpu"
+        if new_kind == self._kind:
+            return
+        self._kind = new_kind
+        # Swap partition + numeric defaults to whichever side the user just picked.
+        cpu_cores, cpu_mem, cpu_time = self.cfg.cpu_defaults
+        gpu_count, gpu_cores, gpu_mem, gpu_time = self.cfg.gpu_defaults
+        self.query_one("#partition", Input).value = (
+            self.cfg.gpu_partition if new_kind == "gpu" else self.cfg.cpu_partition
+        )
+        self.query_one("#cores", Input).value = str(gpu_cores if new_kind == "gpu" else cpu_cores)
+        self.query_one("#mem", Input).value = str(gpu_mem if new_kind == "gpu" else cpu_mem)
+        self.query_one("#time", Input).value = gpu_time if new_kind == "gpu" else cpu_time
+        self.query_one("#gpus", Input).value = str(gpu_count)
+        self._apply_kind_visibility()
 
     @on(Button.Pressed, "#ok")
     @on(Input.Submitted)
     def _ok(self) -> None:
         try:
-            params = GpuParams(
-                gpus=int(self.query_one("#gpus", Input).value or "0"),
+            params = AllocParams(
+                kind=self._kind,
+                partition=self.query_one("#partition", Input).value.strip(),
                 cores=int(self.query_one("#cores", Input).value or "0"),
-                mem=int(self.query_one("#mem", Input).value or "0"),
+                mem_gb=int(self.query_one("#mem", Input).value or "0"),
                 walltime=self.query_one("#time", Input).value.strip(),
+                gpus=int(self.query_one("#gpus", Input).value or "0") if self._kind == "gpu" else 0,
             )
         except ValueError:
             self.app.notify("Invalid number", severity="error")
@@ -239,9 +244,8 @@ class JobsPanel(Container):
         Binding("r", "refresh", "Refresh"),
         Binding("c", "cancel_job", "Cancel"),
         Binding("s", "shell_into", "Shell"),
-        Binding("o", "code_into", "VS Code"),
-        Binding("n", "submit_cpu", "+ CPU"),
-        Binding("g", "submit_gpu", "+ GPU"),
+        Binding("e", "editor_into", "Editor"),
+        Binding("n", "new_instance", "New instance"),
     ]
 
     def __init__(self, **kwargs) -> None:
@@ -374,78 +378,109 @@ class JobsPanel(Container):
             self.app.call_from_thread(self._notify_error, f"scancel {jobid} exited {rc}")
         self.refresh_jobs()
 
+    # ----- shell / editor: auto-attach, or pop the New Instance modal -----
+
     def action_shell_into(self) -> None:
-        self._launch_on_selected("shell")
+        self._attach_or_spawn("shell")
 
-    def action_code_into(self) -> None:
-        self._launch_on_selected("code")
+    def action_editor_into(self) -> None:
+        self._attach_or_spawn("editor")
 
-    def _launch_on_selected(self, kind: str) -> None:
-        row = self._selected_row()
-        if row is None:
-            self.app.notify("Nothing selected.", severity="warning")
-            return
-        if row.state not in RUNNING_STATES:
-            self.app.notify(f"Job {row.jobid} is not running ({row.state}).", severity="warning")
-            return
-        if not row.node or row.node.startswith("("):
-            self.app.notify(
-                f"Selected job has no assigned node yet ({row.node}).", severity="warning"
-            )
-            return
+    def _attach_or_spawn(self, kind: str) -> None:
+        """If a vscode allocation is already running, attach to it. Else pop the modal."""
         cfg = load()
-        a = alloc_mod.Allocation(node=row.node, jobid=row.jobid)
-        folder = launch.resolve_folder("", cfg)
-        if kind == "code":
-            # No suspend needed — code launches a windowed app or returns immediately.
-            self._notify_action(f"opening VS Code on {row.node}")
-            launch.launch_code(a, folder, cfg)
+        alloc = alloc_mod.find_strongest(cfg)
+        if alloc is not None:
+            self._attach_to(kind, alloc)
             return
-        # shell: suspend the TUI so ssh has the terminal. The remote command is
-        # tmux-wrapped, so Ctrl-B D detaches without ending the session.
-        self._notify_action(f"attaching to {row.node} ({kind})… Ctrl-B D detaches, exit ends")
+        # No allocation — ask the user to configure one, then attach.
+        self.app.push_screen(
+            NewInstanceModal(cfg),
+            lambda params: self._submit_then_attach(kind, params) if params else None,
+        )
+
+    def _attach_to(self, kind: str, alloc: alloc_mod.Allocation) -> None:
+        cfg = load()
+        folder = launch.resolve_folder("", cfg)
+        if kind == "editor":
+            self._notify_action(f"opening editor on {alloc.node}")
+            launch.launch_editor(alloc, folder, cfg)
+            return
+        # shell: suspend the TUI so ssh has the terminal.
+        self._notify_action(f"attaching to {alloc.node} (shell)… exit to return")
         with self.app.suspend():
-            launch.launch_shell(a, folder, cfg)
-        self._notify_action(f"returned from {row.node}")
+            launch.launch_shell(alloc, folder, cfg)
+        self._notify_action(f"returned from {alloc.node}")
         self.refresh_jobs()
 
-    def action_submit_cpu(self) -> None:
-        self.app.push_screen(SubmitCpuModal(load()), self._on_cpu_submit)
+    def _submit_then_attach(self, kind: str, params: AllocParams) -> None:
+        self._notify_action(
+            f"submitting {params.kind} ({params.partition}; {params.cores}c/{params.mem_gb}G/{params.walltime})…"
+        )
+        self._do_submit_and_attach(kind, params)
 
-    def _on_cpu_submit(self, params: CpuParams | None) -> None:
-        if params is None:
-            return
-        self._notify_action(f"submitting CPU ({params.cores}c / {params.mem}G / {params.walltime})…")
-        self._do_submit_cpu(params)
-
-    @work(thread=True, group="action")
-    def _do_submit_cpu(self, params: CpuParams) -> None:
+    @work(thread=True, exclusive=True, group="action")
+    def _do_submit_and_attach(self, kind: str, params: AllocParams) -> None:
+        import time
         cfg = load()
         try:
-            out = slurm.submit_cpu(cfg, params.cores, params.mem, params.walltime)
+            if params.kind == "cpu":
+                out = slurm.submit_cpu(
+                    cfg, params.cores, params.mem_gb, params.walltime,
+                    partition=params.partition or None,
+                )
+            else:
+                out = slurm.submit_gpu(
+                    cfg, params.gpus, params.cores, params.mem_gb, params.walltime,
+                    partition=params.partition or None,
+                )
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._notify_error, f"submit failed: {e}")
             return
         first_line = (out.strip().splitlines() or [""])[0]
-        self.app.call_from_thread(self._notify_action, f"submitted: {first_line}")
-        self.refresh_jobs()
+        self.app.call_from_thread(self._notify_action, f"submitted ({first_line}); waiting for node…")
+        # Poll for the alloc to land. cpufast/gpufast schedule in seconds.
+        deadline = time.time() + 30.0
+        alloc: alloc_mod.Allocation | None = None
+        while time.time() < deadline:
+            alloc = alloc_mod.find_strongest(cfg)
+            if alloc is not None:
+                break
+            time.sleep(1.0)
+        if alloc is None:
+            self.app.call_from_thread(
+                self._notify_error, "submission didn't produce a running allocation within 30s"
+            )
+            return
+        self.app.call_from_thread(self._attach_to, kind, alloc)
 
-    def action_submit_gpu(self) -> None:
-        self.app.push_screen(SubmitGpuModal(load()), self._on_gpu_submit)
+    # ----- new instance only (no auto-attach) -----
 
-    def _on_gpu_submit(self, params: GpuParams | None) -> None:
+    def action_new_instance(self) -> None:
+        self.app.push_screen(NewInstanceModal(load()), self._on_new_instance)
+
+    def _on_new_instance(self, params: AllocParams | None) -> None:
         if params is None:
             return
         self._notify_action(
-            f"submitting GPU ({params.gpus}× / {params.cores}c / {params.mem}G / {params.walltime})…"
+            f"submitting {params.kind} ({params.partition}; {params.cores}c/{params.mem_gb}G/{params.walltime})…"
         )
-        self._do_submit_gpu(params)
+        self._do_submit(params)
 
     @work(thread=True, group="action")
-    def _do_submit_gpu(self, params: GpuParams) -> None:
+    def _do_submit(self, params: AllocParams) -> None:
         cfg = load()
         try:
-            out = slurm.submit_gpu(cfg, params.gpus, params.cores, params.mem, params.walltime)
+            if params.kind == "cpu":
+                out = slurm.submit_cpu(
+                    cfg, params.cores, params.mem_gb, params.walltime,
+                    partition=params.partition or None,
+                )
+            else:
+                out = slurm.submit_gpu(
+                    cfg, params.gpus, params.cores, params.mem_gb, params.walltime,
+                    partition=params.partition or None,
+                )
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._notify_error, f"submit failed: {e}")
             return

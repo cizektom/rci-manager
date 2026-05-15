@@ -26,19 +26,40 @@ class Job:
     reason_or_nodelist: str = ""
 
 
-def submit_cpu(cfg: Config, cores: int, mem_gb: int, walltime: str) -> str:
-    """Submit a vscode CPU allocation. Returns the salloc output (job id printout)."""
+def submit_cpu(
+    cfg: Config,
+    cores: int,
+    mem_gb: int,
+    walltime: str,
+    *,
+    partition: str | None = None,
+) -> str:
+    """Submit a vscode CPU allocation. Returns the salloc output (job id printout).
+
+    ``partition`` overrides ``cfg.cpu_partition`` when set — used by the TUI's
+    New Instance modal where the user picks the partition explicitly.
+    """
     cmd = (
-        f"salloc --no-shell --partition={cfg.cpu_partition} --job-name={cfg.cpu_job_name} "
+        f"salloc --no-shell --partition={partition or cfg.cpu_partition} "
+        f"--job-name={cfg.cpu_job_name} "
         f"--cpus-per-task={cores} --mem={mem_gb}G --time={walltime}"
     )
     return ssh.capture(cfg.ssh_host, cmd, check=False)
 
 
-def submit_gpu(cfg: Config, gpus: int, cores: int, mem_gb: int, walltime: str) -> str:
-    """Submit a vscode-gpu GPU allocation."""
+def submit_gpu(
+    cfg: Config,
+    gpus: int,
+    cores: int,
+    mem_gb: int,
+    walltime: str,
+    *,
+    partition: str | None = None,
+) -> str:
+    """Submit a vscode-gpu GPU allocation. ``partition`` overrides cfg default."""
     cmd = (
-        f"salloc --no-shell --partition={cfg.gpu_partition} --job-name={cfg.gpu_job_name} "
+        f"salloc --no-shell --partition={partition or cfg.gpu_partition} "
+        f"--job-name={cfg.gpu_job_name} "
         f"--gres=gpu:{gpus} --cpus-per-task={cores} --mem={mem_gb}G --time={walltime}"
     )
     return ssh.capture(cfg.ssh_host, cmd, check=False)

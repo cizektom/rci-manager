@@ -88,21 +88,14 @@ async def test_refresh_populates_table(monkeypatch) -> None:
         assert panel._rows[1].name == "vscode-gpu"
 
 
-async def test_shell_action_on_running_job_calls_launch_shell(monkeypatch) -> None:
-    """Regression: pressing `s` on a RUNNING job must dispatch to launch.launch_shell.
-
-    Previously the guard ``row.state != "R"`` rejected every job because the squeue
-    format string yields the long-form ``"RUNNING"``.
-    """
+async def test_shell_action_attaches_to_strongest_alloc(monkeypatch) -> None:
+    """Pressing `s` attaches to the strongest running allocation via launch_shell."""
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
     monkeypatch.setattr(
-        slurm,
-        "list_jobs",
-        lambda cfg: (
-            "JOBID PARTITION NAME STATE TIME LIMIT NODES NODE\n"
-            "1234567 cpufast vscode RUNNING 00:05 04:00:00 1 n01\n"
-        ),
+        alloc_mod,
+        "find_strongest",
+        lambda cfg: Allocation(node="n01", jobid="1234567"),
     )
-    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
 
     called: dict[str, object] = {}
 
@@ -116,8 +109,6 @@ async def test_shell_action_on_running_job_calls_launch_shell(monkeypatch) -> No
     app = RciApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        for _ in range(5):
-            await pilot.pause(0.05)
         panel = app.query_one(JobsPanel)
         # ``app.suspend`` would actually flip the terminal; bypass it for the test.
         from contextlib import contextmanager
@@ -131,6 +122,24 @@ async def test_shell_action_on_running_job_calls_launch_shell(monkeypatch) -> No
     assert called.get("alloc") is not None, "launch_shell was never invoked"
     assert called["alloc"].node == "n01"
     assert called["alloc"].jobid == "1234567"
+
+
+async def test_shell_action_pops_modal_when_no_alloc(monkeypatch) -> None:
+    """When no allocation exists, pressing `s` opens the New Instance modal."""
+    from rci_cli.tui import NewInstanceModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
+    monkeypatch.setattr(launch, "launch_shell", lambda *a, **kw: 0)
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel.action_shell_into()
+        await pilot.pause()
+        # The modal is pushed; the active screen should be a NewInstanceModal.
+        assert isinstance(app.screen, NewInstanceModal)
 
 
 async def test_action_log_auto_clears(monkeypatch) -> None:
