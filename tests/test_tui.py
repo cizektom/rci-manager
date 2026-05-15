@@ -75,6 +75,29 @@ def test_jobrow_returns_none_for_garbage() -> None:
     assert JobRow.from_squeue_line("just three fields") is None
 
 
+def test_parse_jobid_from_salloc_handles_known_shapes() -> None:
+    from rci_cli.tui import parse_jobid_from_salloc
+
+    assert parse_jobid_from_salloc("salloc: Granted job allocation 1234567") == "1234567"
+    assert parse_jobid_from_salloc("salloc: Pending job allocation 9999999") == "9999999"
+    assert parse_jobid_from_salloc(
+        "salloc: job 5555 queued and waiting for resources\n"
+        "salloc: job 5555 has been allocated resources"
+    ) == "5555"
+    # No jobid present (salloc errored out) — caller surfaces the message instead.
+    assert parse_jobid_from_salloc("salloc: error: Invalid partition: foo") is None
+    assert parse_jobid_from_salloc("") is None
+
+
+def test_last_meaningful_line_returns_final_non_empty_line() -> None:
+    from rci_cli.tui import last_meaningful_line
+
+    assert last_meaningful_line("a\nb\nc") == "c"
+    assert last_meaningful_line("a\n\n  \nb\n\n") == "b"
+    assert last_meaningful_line("") == "(no output)"
+    assert last_meaningful_line("   ") == "(no output)"
+
+
 # ── App mount ───────────────────────────────────────────────────────────────
 
 
@@ -233,10 +256,13 @@ async def test_folder_modal_prefills_last_folder(monkeypatch, tmp_path) -> None:
         assert folder_input.value == "sam2rl"
 
 
-async def test_new_instance_modal_q_cancels(monkeypatch) -> None:
+async def test_new_instance_modal_q_cancels(monkeypatch, tmp_path) -> None:
     """Pressing ``q`` on the New-Instance modal must close it with ``None``."""
     from rci_cli.tui import AllocParams, NewInstanceModal
     from rci_cli.config import Config
+
+    # Isolate persisted instance params so a prior session doesn't bleed in.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
     captured: dict[str, object] = {"params": "untouched"}
 
@@ -259,12 +285,16 @@ async def test_new_instance_modal_q_cancels(monkeypatch) -> None:
     assert captured["params"] is None, "q should dismiss with None"
 
 
-async def test_new_instance_modal_enter_submits_defaults(monkeypatch) -> None:
+async def test_new_instance_modal_enter_submits_defaults(monkeypatch, tmp_path) -> None:
     """Regression: pressing Enter on the New-Instance modal must submit the
     form with its default values, even when focus is on the partition Select
     (where Enter would otherwise just toggle the dropdown overlay)."""
     from rci_cli.tui import AllocParams, NewInstanceModal
     from rci_cli.config import Config
+
+    # Isolate state so a previously-saved set of instance params doesn't
+    # override the Config defaults we're asserting on below.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
     captured: dict[str, AllocParams | None] = {"params": None}
 
@@ -301,6 +331,91 @@ def test_state_round_trip(monkeypatch, tmp_path) -> None:
     # Overwrite works.
     state.set_last_folder("other")
     assert state.get_last_folder() == "other"
+
+
+def test_instance_params_round_trip(monkeypatch, tmp_path) -> None:
+    from rci_cli import state
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert state.get_last_instance_params() is None
+    state.set_last_instance_params(
+        partition_type="gpu",
+        partition_class="long",
+        cores=8,
+        gpus=2,
+        mem_gb=32,
+        walltime="6:00:00",
+    )
+    got = state.get_last_instance_params()
+    assert got == {
+        "partition_type": "gpu",
+        "partition_class": "long",
+        "cores": 8,
+        "gpus": 2,
+        "mem_gb": 32,
+        "walltime": "6:00:00",
+    }
+
+
+async def test_new_instance_modal_prefills_last_params(monkeypatch, tmp_path) -> None:
+    """Submitting the modal once must make a follow-up open prefill from saved state."""
+    from textual.widgets import Input, Select
+
+    from rci_cli import state
+    from rci_cli.config import Config
+    from rci_cli.tui import NewInstanceModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    state.set_last_instance_params(
+        partition_type="gpu",
+        partition_class="long",
+        cores=8,
+        gpus=2,
+        mem_gb=32,
+        walltime="6:00:00",
+    )
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), lambda _p: None)
+        await pilot.pause()
+        assert isinstance(app.screen, NewInstanceModal)
+        scr = app.screen
+        assert scr.query_one("#partition-type", Select).value == "gpu"
+        assert scr.query_one("#partition-class", Select).value == "long"
+        assert scr.query_one("#cores", Input).value == "8"
+        assert scr.query_one("#gpus", Input).value == "2"
+        assert scr.query_one("#mem", Input).value == "32"
+        assert scr.query_one("#time", Input).value == "6:00:00"
+
+
+async def test_new_instance_modal_submit_persists_params(monkeypatch, tmp_path) -> None:
+    """Submitting must write the form values to state so the next open prefills them."""
+    from rci_cli import state
+    from rci_cli.config import Config
+    from rci_cli.tui import NewInstanceModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert state.get_last_instance_params() is None
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), lambda _p: None)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    saved = state.get_last_instance_params()
+    assert saved is not None
+    # Defaults: cpu/fast, cpu_defaults = (2, 4, "1:00:00"), gpus hidden ⇒ 0.
+    assert saved["partition_type"] == "cpu"
+    assert saved["partition_class"] == "fast"
+    assert saved["cores"] == 2
+    assert saved["gpus"] == 0
+    assert saved["mem_gb"] == 4
+    assert saved["walltime"] == "1:00:00"
 
 
 def test_assemble_partition_concatenates_type_and_class() -> None:

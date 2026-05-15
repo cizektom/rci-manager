@@ -9,10 +9,11 @@ over to ssh for shell-in / claude attach, then re-render on return.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import ClassVar
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
@@ -121,6 +122,34 @@ def validate_alloc(ptype: str, gpus: int) -> str | None:
     if gpus > 0 and ptype == "cpu":
         return "CPU partition doesn't accept GPUs — pick gpu / amdgpu / h200."
     return None
+
+
+_JOBID_PATTERNS = (
+    re.compile(r"job allocation (\d+)"),         # "Granted/Pending job allocation 1234567"
+    re.compile(r"job (\d+) has been allocated"), # "salloc: job 1234567 has been allocated resources"
+    re.compile(r"Submitted batch job (\d+)"),    # belt and suspenders — sbatch-style
+)
+
+
+def parse_jobid_from_salloc(output: str) -> str | None:
+    """Best-effort jobid extraction from ``salloc --no-shell`` stdout/stderr.
+
+    Slurm formats vary by site config; try a few known shapes before giving up.
+    """
+    for pat in _JOBID_PATTERNS:
+        m = pat.search(output)
+        if m:
+            return m.group(1)
+    return None
+
+
+def last_meaningful_line(output: str) -> str:
+    """Last non-empty line — usually the most informative on salloc errors."""
+    for line in reversed(output.strip().splitlines()):
+        line = line.strip()
+        if line:
+            return line
+    return "(no output)"
 
 
 class NewInstanceModal(ModalScreen[AllocParams | None]):
@@ -265,6 +294,23 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def on_key(self, event: events.Key) -> None:
+        """Let ←/→ swap focus between the Submit and Cancel buttons.
+
+        Only fires when focus is already on one of the two buttons — Inputs
+        and Selects consume their own arrow keys (cursor / dropdown nav)
+        before the event bubbles up to the screen, so this stays out of
+        their way.
+        """
+        if event.key not in ("left", "right"):
+            return
+        focused = self.focused
+        if focused is None or focused.id not in ("ok", "cancel"):
+            return
+        other = "cancel" if focused.id == "ok" else "ok"
+        self.query_one(f"#{other}", Button).focus()
+        event.stop()
 
 
 class FolderModal(ModalScreen[str | None]):
@@ -653,18 +699,19 @@ class JobsPanel(Container):
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._notify_error, f"submit failed: {e}")
             return
-        first_line = (out.strip().splitlines() or [""])[0]
-        # salloc prints ``Granted job allocation NNNNNN`` (or ``Pending …``).
-        # Extract the id so we poll the *specific* job we just submitted instead
-        # of grabbing whatever's the strongest among everything running.
-        import re
-        match = re.search(r"job allocation (\d+)", out)
-        if match is None:
+        # salloc typically prints ``Granted/Pending job allocation NNN`` but
+        # variants exist — :func:`parse_jobid_from_salloc` tries multiple shapes.
+        jobid = parse_jobid_from_salloc(out)
+        if jobid is None:
+            # Surface the actual salloc complaint (last non-empty line is usually
+            # the error message) so the user knows whether it was a partition
+            # mismatch, quota issue, or invalid time/mem spec.
             self.app.call_from_thread(
-                self._notify_error, f"couldn't parse jobid from salloc output: {first_line}"
+                self._notify_error,
+                f"submit failed: {last_meaningful_line(out)}",
             )
             return
-        jobid = match.group(1)
+        first_line = (out.strip().splitlines() or [""])[0]
         self.app.call_from_thread(
             self._notify_action, f"submitted ({first_line}); waiting for node…"
         )

@@ -15,8 +15,8 @@ def captured(monkeypatch) -> dict[str, Any]:
     """Capture the most recent ``ssh.capture`` / ``ssh.run`` invocation."""
     box: dict[str, Any] = {"capture": [], "run": []}
 
-    def fake_capture(host: str, cmd: str, *, check: bool = True) -> str:
-        box["capture"].append({"host": host, "cmd": cmd, "check": check})
+    def fake_capture(host: str, cmd: str, **kw) -> str:
+        box["capture"].append({"host": host, "cmd": cmd, **kw})
         return box.get("capture_return", "")
 
     def fake_run(host: str, cmd: str = "", *, tty: bool = False, check: bool = True, stdin=None) -> int:

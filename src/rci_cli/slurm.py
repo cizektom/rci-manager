@@ -47,7 +47,9 @@ def submit_cpu(
         f"--job-name={cfg.cpu_job_name} "
         f"--cpus-per-task={cores} --mem={mem_gb}G --time={walltime}"
     )
-    return ssh.capture(cfg.ssh_host, cmd, check=False)
+    # salloc writes "Granted job allocation NNN" to stderr — merge so the caller
+    # can parse the job id out of the returned string.
+    return ssh.capture(cfg.ssh_host, cmd, check=False, merge_stderr=True)
 
 
 def submit_gpu(
@@ -65,7 +67,7 @@ def submit_gpu(
         f"--job-name={cfg.gpu_job_name} "
         f"--gres=gpu:{gpus} --cpus-per-task={cores} --mem={mem_gb}G --time={walltime}"
     )
-    return ssh.capture(cfg.ssh_host, cmd, check=False)
+    return ssh.capture(cfg.ssh_host, cmd, check=False, merge_stderr=True)
 
 
 def list_jobs(cfg: Config) -> str:

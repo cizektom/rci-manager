@@ -11,14 +11,27 @@ import subprocess
 from collections.abc import Sequence
 
 
-def capture(host: str, remote_cmd: str, *, check: bool = True) -> str:
-    """Run ``remote_cmd`` on ``host`` over ssh and return its stdout (stripped)."""
+def capture(
+    host: str,
+    remote_cmd: str,
+    *,
+    check: bool = True,
+    merge_stderr: bool = False,
+) -> str:
+    """Run ``remote_cmd`` on ``host`` over ssh and return its stdout (stripped).
+
+    ``merge_stderr=True`` concatenates stderr after stdout. Needed for
+    ``salloc``, which writes ``Granted job allocation NNN`` to stderr by
+    default — capturing only stdout would lose the job id.
+    """
     proc = subprocess.run(
         ["ssh", host, remote_cmd],
         check=check,
         capture_output=True,
         text=True,
     )
+    if merge_stderr:
+        return (proc.stdout + proc.stderr).strip()
     return proc.stdout.strip()
 
 
