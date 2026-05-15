@@ -189,10 +189,11 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        # ``q`` escapes this window the same way ``escape`` does — closes the
-        # modal and returns to the jobs panel. App-level ``q`` (quit) only
-        # fires on the main screen because modal-screen bindings shadow it.
-        Binding("escape,q", "cancel", "Cancel", show=False),
+        # ``q``/``escape`` close the modal from anywhere — priority=True so the
+        # binding fires even when an Input has focus (otherwise integer inputs
+        # for cores/mem/gpus would silently swallow ``q`` as a rejected
+        # character and the user couldn't back out of the form).
+        Binding("escape,q", "cancel", "Cancel", show=False, priority=True),
         # Enter submits from anywhere in the form (priority=True overrides the
         # focused widget). Initial focus is on partition-type so Tab walks the
         # form naturally; pressing Enter at any point confirms current values
