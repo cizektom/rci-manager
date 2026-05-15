@@ -243,6 +243,7 @@ class JobsPanel(Container):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._rows: list[JobRow] = []
+        self._last_action: str = ""
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -297,9 +298,9 @@ class JobsPanel(Container):
             status.update("[yellow]○[/yellow] no running vscode allocation — press [b]n[/] or [b]g[/] to submit")
         # Clear the "refreshing…" indicator if a manual refresh just completed.
         # Other action messages (cancellations, submissions) are preserved.
-        action_log = self.query_one("#last-action", Static)
-        if str(action_log.renderable) == "refreshing…":
-            action_log.update("")
+        if self._last_action == "refreshing…":
+            self._last_action = ""
+            self.query_one("#last-action", Static).update("")
 
     # ----- selection helpers -----
 
@@ -317,6 +318,7 @@ class JobsPanel(Container):
         return r.jobid if r else None
 
     def _notify_action(self, msg: str) -> None:
+        self._last_action = msg
         self.query_one("#last-action", Static).update(msg)
 
     def _notify_error(self, msg: str) -> None:
