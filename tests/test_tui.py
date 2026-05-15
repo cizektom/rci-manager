@@ -393,11 +393,9 @@ async def test_new_instance_modal_q_dismisses_from_walltime(monkeypatch, tmp_pat
     assert captured["params"] is None, "q on the walltime Select should dismiss the modal"
 
 
-async def test_new_instance_modal_initial_focus_lands_in_form(monkeypatch, tmp_path) -> None:
-    """Initial focus is on the first form field so Tab walks the form
-    naturally (partition-type → partition-class → cores → …)."""
-    from textual.widgets import Select
-
+async def test_new_instance_modal_opens_with_no_widget_focused(monkeypatch, tmp_path) -> None:
+    """The modal opens with no inner widget focused. Enter submits the
+    prefilled defaults; Tab walks into the form starting at partition-type."""
     from rci_cli.tui import NewInstanceModal
     from rci_cli.config import Config
 
@@ -408,45 +406,20 @@ async def test_new_instance_modal_initial_focus_lands_in_form(monkeypatch, tmp_p
         await pilot.pause()
         app.push_screen(NewInstanceModal(Config()), lambda _p: None)
         await pilot.pause()
+        # Either nothing is focused, or focus is the screen itself (Textual's
+        # "no inner widget" state). Either way, it must not be any of the
+        # modal's form widgets or buttons.
         scr = app.screen
-        assert app.focused is scr.query_one("#partition-type", Select), (
-            f"expected partition-type Select focused, got {app.focused!r}"
+        form_ids = {"partition-type", "partition-class", "cores", "gpus", "mem", "time", "ok", "cancel"}
+        focused_id = getattr(app.focused, "id", None)
+        assert focused_id not in form_ids, (
+            f"expected no inner widget focused, got {focused_id}"
         )
 
 
-async def test_new_instance_modal_enter_on_select_opens_dropdown(monkeypatch, tmp_path) -> None:
-    """Enter while focused on a Select must open its dropdown, not submit
-    the form — otherwise users can't browse partition options."""
-    from textual.widgets import Select
-
-    from rci_cli.tui import NewInstanceModal
-    from rci_cli.config import Config
-
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    captured: list[object] = []
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(NewInstanceModal(Config()), captured.append)
-        await pilot.pause()
-        scr = app.screen
-        # Focus is on partition-type Select; pressing Enter should open it.
-        await pilot.press("enter")
-        await pilot.pause()
-        # Modal must NOT have been dismissed — still on screen.
-        assert isinstance(app.screen, NewInstanceModal), (
-            "Enter on a Select must not submit the form"
-        )
-        # And nothing should have been delivered to the dismiss callback.
-        assert captured == []
-
-
-async def test_new_instance_modal_enter_on_input_submits(monkeypatch, tmp_path) -> None:
-    """Enter from an Input field (cores / mem / gpus) submits the form —
-    the priority binding routes through ``action_submit`` → ``_do_submit``."""
-    from textual.widgets import Input
-
+async def test_new_instance_modal_initial_enter_submits_defaults(monkeypatch, tmp_path) -> None:
+    """Pressing Enter immediately after opening (no inner focus) submits the
+    pre-filled defaults — the canonical "I accept these values" path."""
     from rci_cli.tui import AllocParams, NewInstanceModal
     from rci_cli.config import Config
 
@@ -458,13 +431,40 @@ async def test_new_instance_modal_enter_on_input_submits(monkeypatch, tmp_path) 
         await pilot.pause()
         app.push_screen(NewInstanceModal(Config()), captured.append)
         await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert len(captured) == 1, "initial Enter must submit"
+    assert isinstance(captured[0], AllocParams)
+
+
+async def test_new_instance_modal_enter_in_form_field_advances_focus(monkeypatch, tmp_path) -> None:
+    """Once inside the form (after Tab), Enter steps to the next field rather
+    than submitting — matches the Tab affordance for keyboard-only flows."""
+    from textual.widgets import Input, Select
+
+    from rci_cli.tui import NewInstanceModal
+    from rci_cli.config import Config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: list[object] = []
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), captured.append)
+        await pilot.pause()
         scr = app.screen
-        scr.query_one("#cores", Input).focus()
+        # Focus the partition-type Select (simulating first Tab into the form).
+        scr.query_one("#partition-type", Select).focus()
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-    assert len(captured) == 1, "Enter on an Input must submit the form"
-    assert isinstance(captured[0], AllocParams)
+        # Modal must still be open (no dismissal) and focus must have moved.
+        assert isinstance(app.screen, NewInstanceModal)
+        assert captured == []
+        assert app.focused is not scr.query_one("#partition-type", Select), (
+            f"Enter must advance focus, but it stayed on partition-type"
+        )
 
 
 async def test_new_instance_modal_submit_button_uses_defaults(monkeypatch, tmp_path) -> None:

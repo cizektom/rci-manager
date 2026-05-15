@@ -174,6 +174,10 @@ def last_meaningful_line(output: str) -> str:
 
 
 class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
+    # Disable Textual's default "auto-focus the first focusable widget on
+    # mount". The modal opens with NO inner focus: Enter submits defaults,
+    # Tab walks into the form starting at partition-type.
+    AUTO_FOCUS: ClassVar[str] = ""
     """Unified configure-and-submit dialog for both CPU and GPU allocations.
 
     No CPU/GPU toggle — the *kind* is derived from the ``GPUs`` field
@@ -239,7 +243,7 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # VerticalScroll so the modal stays usable on shorter terminals — the
         # form scrolls within the box once it grows past the viewport's height.
         with VerticalScroll(id="modal-box"):
-            yield Label("[b]New instance[/b]", id="modal-title")
+            yield Label("[b]Resources[/b]", id="modal-title")
             yield Label("Partition")
             with Horizontal(id="partition-row"):
                 yield Select(
@@ -285,11 +289,10 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # Sync the GPUs row visibility to the restored partition type — if the
         # user's last submission was a GPU job, the field should already be visible.
         self._apply_gpu_visibility(self._init_ptype)
-        # Focus the first form field so Tab walks through the form naturally
-        # (partition-type → partition-class → cores → … → buttons). Enter
-        # still submits from anywhere via the priority binding above, so the
-        # "accept defaults" path doesn't require any navigation.
-        self.query_one("#partition-type", Select).focus()
+        # No widget focus on open (AUTO_FOCUS = ""). Enter submits the
+        # prefilled defaults; Tab walks into the form starting at
+        # partition-type. Once inside the form, Enter advances field-by-field
+        # — see :meth:`action_submit`.
 
     def _apply_gpu_visibility(self, ptype: str) -> None:
         is_gpu_type = ptype != "cpu"
@@ -320,19 +323,25 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         self._do_submit()
 
     def action_submit(self) -> None:
-        # Smart Enter: route based on the focused widget so the priority
-        # binding doesn't trap users on a Select (dropdowns) or on Cancel.
+        # Enter is a navigation key inside the form; only the no-focus opening
+        # state and explicit Submit/Cancel buttons trigger terminal actions.
         focused = self.focused
-        if isinstance(focused, Select):
-            # Open the dropdown so the user can pick an option.
-            focused.action_show_overlay()
+        if focused is None or focused is self:
+            # Modal just opened (no inner focus) → submit defaults.
+            self._do_submit()
             return
-        if isinstance(focused, Button) and getattr(focused, "id", "") == "cancel":
-            # Cancel button + Enter should abort, not submit.
-            self.action_cancel()
+        if isinstance(focused, Button):
+            if getattr(focused, "id", "") == "cancel":
+                self.action_cancel()
+                return
+            # Submit button (or any other) → submit the form.
+            self._do_submit()
             return
-        # Submit button / Inputs / no focus → submit the form.
-        self._do_submit()
+        # On a form field (Select / Input) → advance to the next field. This
+        # gives Enter the same "step forward" affordance as Tab, matching the
+        # standard form-flow UX. After the last form field the next focusable
+        # is the Submit button, where another Enter submits.
+        self.focus_next()
 
     def _do_submit(self) -> None:
         try:
