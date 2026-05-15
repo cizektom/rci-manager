@@ -194,14 +194,14 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # for cores/mem/gpus would silently swallow ``q`` as a rejected
         # character and the user couldn't back out of the form).
         Binding("escape,q", "cancel", "Cancel", show=False, priority=True),
-        # Enter submits from anywhere in the form (priority=True overrides the
-        # focused widget). Initial focus is on partition-type so Tab walks the
-        # form naturally; pressing Enter at any point confirms current values
-        # rather than waiting until you Tab onto Submit.
-        # Trade-off: opening a partition Select dropdown uses Space or Down
-        # (Enter is reserved for submit). Once the dropdown is open it's a
-        # nested screen so its own Enter binding wins — confirming a
-        # highlighted option still works as expected.
+        # Enter is a priority binding so it works from any focused widget,
+        # but :meth:`action_submit` routes intelligently:
+        #   - on a Select → open the dropdown (preserves Enter-to-pick UX)
+        #   - on Cancel button → abort
+        #   - on Submit button / Input / unfocused → submit the form
+        # Result: Enter on partition-type opens the partition picker;
+        # Enter on Cores/Memory/etc. submits; Enter inside an open Select
+        # overlay confirms the highlighted option (its own screen handles it).
         Binding("enter", "submit", "Submit", show=False, priority=True),
     ]
 
@@ -317,9 +317,24 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
 
     @on(Button.Pressed, "#ok")
     def _ok(self) -> None:
-        self.action_submit()
+        self._do_submit()
 
     def action_submit(self) -> None:
+        # Smart Enter: route based on the focused widget so the priority
+        # binding doesn't trap users on a Select (dropdowns) or on Cancel.
+        focused = self.focused
+        if isinstance(focused, Select):
+            # Open the dropdown so the user can pick an option.
+            focused.action_show_overlay()
+            return
+        if isinstance(focused, Button) and getattr(focused, "id", "") == "cancel":
+            # Cancel button + Enter should abort, not submit.
+            self.action_cancel()
+            return
+        # Submit button / Inputs / no focus → submit the form.
+        self._do_submit()
+
+    def _do_submit(self) -> None:
         try:
             ptype = str(self.query_one("#partition-type", Select).value)
             pclass = str(self.query_one("#partition-class", Select).value)
@@ -492,17 +507,17 @@ class JobRow:
 class JobsPanel(Container):
     """Live jobs dashboard with action keys."""
 
-    # Order = footer order, picked for daily-use frequency: connect (s/e), then
-    # create (n), then less-frequent ssh-to-login (f) and manual refresh (r).
-    # Destructive Cancel last so it's hard to hit by accident; app-level Quit
-    # then appears after these.
+    # Order = footer order. Reads as a workflow story left-to-right: get onto
+    # the cluster (Login) → submit a job (Submit) → connect to it (Connect) →
+    # open in an editor (Editor) → maintenance (Refresh) → destructive (Kill).
+    # Every label is cued by its key letter so the footer reads as a menu.
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("s", "shell_into", "Shell"),
-        Binding("e", "editor_into", "Editor"),
-        Binding("n", "new_instance", "New"),
         Binding("l", "shell_frontend", "Login"),
+        Binding("s", "new_instance", "Submit"),
+        Binding("c", "shell_into", "Connect"),
+        Binding("e", "editor_into", "Editor"),
         Binding("r", "refresh", "Refresh"),
-        Binding("c", "cancel_job", "Cancel"),
+        Binding("k", "cancel_job", "Kill"),
     ]
 
     def __init__(self, **kwargs) -> None:

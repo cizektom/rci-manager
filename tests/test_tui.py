@@ -414,9 +414,39 @@ async def test_new_instance_modal_initial_focus_lands_in_form(monkeypatch, tmp_p
         )
 
 
-async def test_new_instance_modal_enter_submits_from_form_field(monkeypatch, tmp_path) -> None:
-    """The priority Enter binding submits the form even when focus is on a form
-    field (Select / Input), not just the Submit button."""
+async def test_new_instance_modal_enter_on_select_opens_dropdown(monkeypatch, tmp_path) -> None:
+    """Enter while focused on a Select must open its dropdown, not submit
+    the form — otherwise users can't browse partition options."""
+    from textual.widgets import Select
+
+    from rci_cli.tui import NewInstanceModal
+    from rci_cli.config import Config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: list[object] = []
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), captured.append)
+        await pilot.pause()
+        scr = app.screen
+        # Focus is on partition-type Select; pressing Enter should open it.
+        await pilot.press("enter")
+        await pilot.pause()
+        # Modal must NOT have been dismissed — still on screen.
+        assert isinstance(app.screen, NewInstanceModal), (
+            "Enter on a Select must not submit the form"
+        )
+        # And nothing should have been delivered to the dismiss callback.
+        assert captured == []
+
+
+async def test_new_instance_modal_enter_on_input_submits(monkeypatch, tmp_path) -> None:
+    """Enter from an Input field (cores / mem / gpus) submits the form —
+    the priority binding routes through ``action_submit`` → ``_do_submit``."""
+    from textual.widgets import Input
+
     from rci_cli.tui import AllocParams, NewInstanceModal
     from rci_cli.config import Config
 
@@ -428,11 +458,12 @@ async def test_new_instance_modal_enter_submits_from_form_field(monkeypatch, tmp
         await pilot.pause()
         app.push_screen(NewInstanceModal(Config()), captured.append)
         await pilot.pause()
-        # Focus is on the first form field (partition-type Select) — confirmed
-        # by the test above. Pressing Enter here should still submit.
+        scr = app.screen
+        scr.query_one("#cores", Input).focus()
+        await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-    assert len(captured) == 1, "Enter on a form field must dismiss the modal"
+    assert len(captured) == 1, "Enter on an Input must submit the form"
     assert isinstance(captured[0], AllocParams)
 
 
@@ -462,7 +493,9 @@ async def test_new_instance_modal_submit_button_uses_defaults(monkeypatch, tmp_p
         app.push_screen(NewInstanceModal(Config()), remember)
         await pilot.pause()
         assert isinstance(app.screen, NewInstanceModal)
-        app.screen.action_submit()
+        # ``action_submit`` smart-routes (Select → open dropdown); call the
+        # underlying ``_do_submit`` directly to simulate Submit-button press.
+        app.screen._do_submit()
         await pilot.pause()
     assert captured["params"] is not None, "Submit did not dispatch"
     # Defaults from Config: cpu_defaults = (2, 4, "1:00:00") + cpu/fast.
@@ -562,7 +595,9 @@ async def test_new_instance_modal_submit_persists_params(monkeypatch, tmp_path) 
         await pilot.pause()
         app.push_screen(NewInstanceModal(Config()), lambda _p: None)
         await pilot.pause()
-        app.screen.action_submit()
+        # action_submit() would smart-route to the Select dropdown; go straight
+        # to the underlying submit path.
+        app.screen._do_submit()
         await pilot.pause()
 
     saved = state.get_last_instance_params()
