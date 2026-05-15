@@ -30,7 +30,7 @@ from textual.widgets import (
 )
 
 from . import alloc as alloc_mod
-from . import launch, slurm, state
+from . import launch, slurm, ssh, state
 from .config import Config, load
 
 REFRESH_INTERVAL = 5.0
@@ -269,21 +269,20 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
                 allow_blank=False,
             )
             with Horizontal(id="modal-buttons"):
-                # No ``variant="primary"`` — both buttons start neutral and
-                # the focused one is highlighted via Button:focus styling, so
-                # ←/→ or Tab can shift the visible default.
-                yield Button("Submit", id="ok")
+                # Cancel comes FIRST in compose order so ``ok`` (Submit) is
+                # the last focusable widget. With initial focus on Submit
+                # (below), plain Tab wraps to partition-type — natural
+                # "step into the form" after rejecting the prefilled defaults.
                 yield Button("Cancel", id="cancel")
+                yield Button("Submit", id="ok")
 
     def on_mount(self) -> None:
         # Sync the GPUs row visibility to the restored partition type — if the
         # user's last submission was a GPU job, the field should already be visible.
         self._apply_gpu_visibility(self._init_ptype)
-        # Focus the Submit button so the very first Enter confirms the
-        # pre-filled defaults (last-used params or Config defaults). The form
-        # is still reachable: Shift-Tab walks backwards into Walltime → Mem →
-        # GPUs → Cores → partition-class → partition-type, which is the
-        # natural review order when checking a recurrent submission.
+        # Focus the Submit button: the first Enter confirms the pre-filled
+        # defaults; plain Tab wraps to partition-type (because Cancel is now
+        # earlier in compose order), so editing the form is one Tab away.
         self.query_one("#ok", Button).focus()
 
     def _apply_gpu_visibility(self, ptype: str) -> None:
@@ -491,6 +490,7 @@ class JobsPanel(Container):
         Binding("r", "refresh", "Refresh"),
         Binding("c", "cancel_job", "Cancel"),
         Binding("s", "shell_into", "Shell"),
+        Binding("f", "shell_frontend", "Frontend"),
         Binding("e", "editor_into", "Editor"),
         Binding("n", "new_instance", "New instance"),
     ]
@@ -681,6 +681,20 @@ class JobsPanel(Container):
 
     def action_editor_into(self) -> None:
         self._pick_folder_then("editor")
+
+    def action_shell_frontend(self) -> None:
+        """Open an interactive ssh session to the login host (``cfg.ssh_host``).
+
+        No folder prompt, no allocation — this is the bare ``ssh rci`` you'd
+        type by hand. Useful for browsing files, running ``squeue``/``sacct``,
+        or kicking off submissions outside the TUI.
+        """
+        cfg = load()
+        self._notify_action(f"ssh → {cfg.ssh_host}… exit to return")
+        with self.app.suspend():
+            ssh.run(cfg.ssh_host, check=False)
+        self._notify_action(f"returned from {cfg.ssh_host}")
+        self.refresh_jobs()
 
     def _pick_folder_then(self, kind: str) -> None:
         prompt = f"{kind.capitalize()} into folder"
@@ -966,6 +980,22 @@ Input {
     margin-bottom: 1;
 }
 Input:focus { border: round ansi_cyan; }
+
+/* Match Select to Input. Textual draws Select's visible border on the inner
+   ``SelectCurrent`` (not on Select itself), so we have to target that to swap
+   the default ``tall`` border for the rounded grey/cyan look Inputs use. */
+SelectCurrent {
+    background: ansi_default;
+    color: ansi_default;
+    border: round ansi_bright_black;
+}
+Select:focus > SelectCurrent {
+    border: round ansi_cyan;
+}
+/* Vertical spacing below the standalone walltime Select to mirror Input's
+   margin-bottom. The two Selects inside #partition-row already get spacing
+   from the row's own padding-bottom — overriding that here would double up. */
+#time { margin-bottom: 1; }
 
 #modal-buttons {
     height: auto;
