@@ -49,9 +49,12 @@ class ConfirmModal(ModalScreen[bool]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "yes", "Yes", show=False),
-        Binding("n,q", "no", "No", show=False),
+        Binding("n", "no", "No", show=False),
         Binding("escape", "no", "Cancel", show=False),
         Binding("enter", "yes", "Confirm", show=False),
+        # ``q`` is the global exit key — forward to App.action_quit explicitly
+        # (modal screens don't fall through to App bindings on their own).
+        Binding("q", "app.quit", "Quit", show=False),
     ]
 
     def __init__(self, prompt: str, *, dangerous: bool = False) -> None:
@@ -163,12 +166,16 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape,q", "cancel", "Cancel", show=False),
-        # Enter falls through to the focused widget first: on a Select it
-        # opens/selects the dropdown, on an Input it fires Input.Submitted
-        # (handled below) and submits. No ``priority`` — that flag would
-        # hijack Enter from the Selects and block partition switching.
-        Binding("enter", "submit", "Submit", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
+        # ``q`` exits the app from anywhere — forward to App.action_quit
+        # (modal screens don't bubble bindings up to the App on their own).
+        # Focused Inputs still receive ``q`` as a literal character because
+        # the focused widget consumes the key before the binding fires.
+        Binding("q", "app.quit", "Quit", show=False),
+        # No screen-level Enter binding: Enter while editing an Input would
+        # otherwise submit the whole form mid-type. Submitting now requires
+        # focus on the Submit button (which consumes Enter natively via
+        # Button.Pressed). Enter on a Select still opens its dropdown.
     ]
 
     def __init__(self, cfg: Config) -> None:
@@ -250,7 +257,6 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
             gpus_input.value = "1"
 
     @on(Button.Pressed, "#ok")
-    @on(Input.Submitted)
     def _ok(self) -> None:
         self.action_submit()
 
@@ -318,6 +324,8 @@ class FolderModal(ModalScreen[str | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        # ``q`` is the global exit key — forward to App.action_quit.
+        Binding("q", "app.quit", "Quit", show=False),
     ]
 
     def __init__(self, prompt: str = "Folder on compute node") -> None:
@@ -511,15 +519,13 @@ class JobsPanel(Container):
         running = sum(1 for r in rows if r.state in RUNNING_STATES)
         pending = len(rows) - running
         status = self.query_one("#alloc-status", Static)
-        if not rows:
-            status.update("no jobs — press [b]n[/] to submit a new instance")
-        else:
-            parts: list[str] = []
-            if running:
-                parts.append(f"[green b]{running}[/] running")
-            if pending:
-                parts.append(f"[yellow]{pending}[/] pending")
-            status.update("  [dim]·[/dim]  ".join(parts))
+        # Uniform format: always show ``N running``; append ``M pending`` only
+        # when non-zero. The footer already advertises ``n New instance`` so a
+        # call-to-action here would be redundant.
+        parts = [f"[green b]{running}[/] running"]
+        if pending:
+            parts.append(f"[yellow]{pending}[/] pending")
+        status.update("  [dim]·[/dim]  ".join(parts))
         # Clear the "refreshing…" indicator if a manual refresh just completed.
         # Other action messages stay until their own fade timer fires.
         if self._last_action == "refreshing…":
