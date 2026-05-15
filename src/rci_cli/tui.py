@@ -327,24 +327,26 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         self._do_submit()
 
     def action_submit(self) -> None:
-        # Enter is a navigation key inside the form; only the no-focus opening
-        # state and explicit Submit/Cancel buttons trigger terminal actions.
+        # Enter routing — depends on what's focused:
+        #   no focus / screen itself → submit defaults (the "open + Enter" path)
+        #   Select                   → open its dropdown so the user can pick
+        #   Input                    → advance to the next field (like Tab)
+        #   Cancel button            → abort the modal
+        #   Submit (or other) button → submit the form
         focused = self.focused
         if focused is None or focused is self:
-            # Modal just opened (no inner focus) → submit defaults.
             self._do_submit()
+            return
+        if isinstance(focused, Select):
+            focused.action_show_overlay()
             return
         if isinstance(focused, Button):
             if getattr(focused, "id", "") == "cancel":
                 self.action_cancel()
                 return
-            # Submit button (or any other) → submit the form.
             self._do_submit()
             return
-        # On a form field (Select / Input) → advance to the next field. This
-        # gives Enter the same "step forward" affordance as Tab, matching the
-        # standard form-flow UX. After the last form field the next focusable
-        # is the Submit button, where another Enter submits.
+        # Input (numeric fields) → step to the next focusable widget.
         self.focus_next()
 
     def _do_submit(self) -> None:

@@ -437,10 +437,10 @@ async def test_new_instance_modal_initial_enter_submits_defaults(monkeypatch, tm
     assert isinstance(captured[0], AllocParams)
 
 
-async def test_new_instance_modal_enter_in_form_field_advances_focus(monkeypatch, tmp_path) -> None:
-    """Once inside the form (after Tab), Enter steps to the next field rather
-    than submitting — matches the Tab affordance for keyboard-only flows."""
-    from textual.widgets import Input, Select
+async def test_new_instance_modal_enter_on_select_keeps_modal_open(monkeypatch, tmp_path) -> None:
+    """Enter on a Select must not dismiss the modal — it opens the dropdown
+    (or otherwise keeps the user in the form to pick an option)."""
+    from textual.widgets import Select
 
     from rci_cli.tui import NewInstanceModal
     from rci_cli.config import Config
@@ -454,17 +454,41 @@ async def test_new_instance_modal_enter_in_form_field_advances_focus(monkeypatch
         app.push_screen(NewInstanceModal(Config()), captured.append)
         await pilot.pause()
         scr = app.screen
-        # Focus the partition-type Select (simulating first Tab into the form).
         scr.query_one("#partition-type", Select).focus()
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        # Modal must still be open (no dismissal) and focus must have moved.
+        # Modal is still up; no AllocParams (or anything else) was returned.
         assert isinstance(app.screen, NewInstanceModal)
         assert captured == []
-        assert app.focused is not scr.query_one("#partition-type", Select), (
-            f"Enter must advance focus, but it stayed on partition-type"
-        )
+
+
+async def test_new_instance_modal_enter_on_input_advances_focus(monkeypatch, tmp_path) -> None:
+    """Enter on a numeric Input (cores/mem/gpus) advances to the next field
+    — same affordance as Tab, no dismissal of the modal."""
+    from textual.widgets import Input
+
+    from rci_cli.tui import NewInstanceModal
+    from rci_cli.config import Config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: list[object] = []
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), captured.append)
+        await pilot.pause()
+        scr = app.screen
+        cores = scr.query_one("#cores", Input)
+        cores.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        # Modal still up, nothing dismissed, focus moved off Cores.
+        assert isinstance(app.screen, NewInstanceModal)
+        assert captured == []
+        assert app.focused is not cores, "Enter on Input must advance focus"
 
 
 async def test_new_instance_modal_submit_button_uses_defaults(monkeypatch, tmp_path) -> None:
