@@ -38,6 +38,7 @@ from . import launch, slurm
 from .config import Config, load
 
 REFRESH_INTERVAL = 5.0
+ACTION_FADE_SECONDS = 6.0  # how long the inline action log lingers before auto-clearing
 
 # squeue's ``%T`` long-form yields ``RUNNING``/``PENDING``/…; some setups still use
 # the short codes (``R``/``PD``). Accept both so the action guards are robust.
@@ -248,6 +249,7 @@ class JobsPanel(Container):
         super().__init__(**kwargs)
         self._rows: list[JobRow] = []
         self._last_action: str = ""
+        self._action_clear_timer = None  # type: ignore[var-annotated]
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -301,10 +303,9 @@ class JobsPanel(Container):
         else:
             status.update("[yellow]○[/yellow] no running vscode allocation — press [b]n[/] or [b]g[/] to submit")
         # Clear the "refreshing…" indicator if a manual refresh just completed.
-        # Other action messages (cancellations, submissions) are preserved.
+        # Other action messages stay until their own fade timer fires.
         if self._last_action == "refreshing…":
-            self._last_action = ""
-            self.query_one("#last-action", Static).update("")
+            self._clear_action_log()
 
     # ----- selection helpers -----
 
@@ -324,6 +325,23 @@ class JobsPanel(Container):
     def _notify_action(self, msg: str) -> None:
         self._last_action = msg
         self.query_one("#last-action", Static).update(msg)
+        # Schedule auto-clear; cancel any prior pending clear so a new message
+        # gets the full fade window rather than inheriting the old one's clock.
+        if self._action_clear_timer is not None:
+            self._action_clear_timer.stop()
+            self._action_clear_timer = None
+        if msg:
+            self._action_clear_timer = self.set_timer(ACTION_FADE_SECONDS, self._clear_action_log)
+
+    def _clear_action_log(self) -> None:
+        self._last_action = ""
+        try:
+            self.query_one("#last-action", Static).update("")
+        except Exception:  # noqa: BLE001 — widget may be unmounted on exit
+            pass
+        if self._action_clear_timer is not None:
+            self._action_clear_timer.stop()
+            self._action_clear_timer = None
 
     def _notify_error(self, msg: str) -> None:
         self.app.notify(msg, severity="error", timeout=6)

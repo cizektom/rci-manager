@@ -133,6 +133,25 @@ async def test_shell_action_on_running_job_calls_launch_shell(monkeypatch) -> No
     assert called["alloc"].jobid == "1234567"
 
 
+async def test_action_log_auto_clears(monkeypatch) -> None:
+    """Regression: the inline action log must fade after ``ACTION_FADE_SECONDS``."""
+    from rci_cli import tui as tui_mod
+
+    monkeypatch.setattr(tui_mod, "ACTION_FADE_SECONDS", 0.1)
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._notify_action("cancelled job 1234")
+        assert panel._last_action == "cancelled job 1234"
+        # Wait past the fade window
+        await pilot.pause(0.25)
+        assert panel._last_action == ""
+
+
 async def test_refresh_handles_squeue_failure_gracefully(monkeypatch) -> None:
     def boom(cfg):
         raise RuntimeError("network blip")
