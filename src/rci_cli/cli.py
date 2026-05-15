@@ -167,25 +167,6 @@ def cancel_vscode() -> None:
 
 
 @app.command()
-def claude(
-    folder: Annotated[str, typer.Argument(help="folder on the compute node")] = "",
-    suffix: Annotated[
-        str,
-        typer.Argument(help="optional suffix for the tmux session name (parallel sessions)"),
-    ] = "",
-    gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
-) -> None:
-    """Run ``claude`` on a compute node inside a persistent tmux session.
-
-    Re-running the same command (same folder, same suffix) attaches back to the
-    running session — ssh disconnects don't kill the work.
-    """
-    cfg = _cfg()
-    a = _require_alloc(cfg, require_gpu=gpu)
-    sys.exit(launch.launch_claude(a, launch.resolve_folder(folder, cfg), cfg, suffix=suffix))
-
-
-@app.command()
 def code(
     folder: Annotated[str, typer.Argument()] = "",
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,

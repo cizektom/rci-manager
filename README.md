@@ -38,7 +38,6 @@ shadow this binary).
 | `rci cancel JOBID`                   | `rci-cancel`                   |                                                    |
 | `rci cancel-all`                     | `rci-cancel-all`               | confirms first                                     |
 | `rci cancel-vscode`                  | `rci-cancel-vscode`            | confirms first                                     |
-| `rci claude [DIR] [SUFFIX] [--gpu]`  | `rci-claude` / `-gpu`          | persistent tmux session; reattaches on re-run      |
 | `rci shell  [DIR] [SUFFIX] [--gpu]`  | `rci-shell` / `-gpu`           | persistent tmux session; reattaches on re-run      |
 | `rci code   [DIR] [--gpu]`           | `rci-code` / `-gpu`            | WSL → Windows `code.cmd` via `cmd.exe`             |
 | `rci alloc  [--gpu]`                 | `_rci_alloc`                   | prints `<node> <jobid>` — scripting-friendly       |
@@ -46,32 +45,33 @@ shadow this binary).
 | `rci tui`                            | *(new)*                        | Textual TUI dashboard (also: bare `rci`)           |
 | `rci version`                        | -                              |                                                    |
 
-**Folder argument rules** (applies to `claude`, `code`, `shell`):
+**Folder argument rules** (applies to `code`, `shell`):
 
 - omitted → `/home/cizekto2`
-- relative → resolved under `/home/cizekto2` (`rci claude sam2rl` → `/home/cizekto2/sam2rl`)
+- relative → resolved under `/home/cizekto2` (`rci shell sam2rl` → `/home/cizekto2/sam2rl`)
 - absolute → used as-is
 
-### Persistent tmux sessions (claude / shell)
+### Persistent tmux sessions (shell)
 
-`rci claude` and `rci shell` each wrap the remote command in a named
-tmux session: `<kind>-<basename-of-folder>[-<suffix>]`.
+`rci shell` wraps the remote bash in a named tmux session:
+`shell-<basename-of-folder>[-<suffix>]`.
 
-| invocation                       | folder                       | session name             |
-| -------------------------------- | ---------------------------- | ------------------------ |
-| `rci claude`                     | `/home/cizekto2`             | `claude-home`            |
-| `rci claude sam2rl`              | `/home/cizekto2/sam2rl`      | `claude-sam2rl`          |
-| `rci claude sam2rl exp1`         | `/home/cizekto2/sam2rl`      | `claude-sam2rl-exp1`     |
-| `rci shell  sam2rl`              | `/home/cizekto2/sam2rl`      | `shell-sam2rl`           |
+| invocation                | folder                       | session name             |
+| ------------------------- | ---------------------------- | ------------------------ |
+| `rci shell`               | `/home/cizekto2`             | `shell-home`             |
+| `rci shell sam2rl`        | `/home/cizekto2/sam2rl`      | `shell-sam2rl`           |
+| `rci shell sam2rl exp1`   | `/home/cizekto2/sam2rl`      | `shell-sam2rl-exp1`      |
 
 Ssh disconnects (or laptop sleep) don't kill the work — the tmux session keeps
-running on the compute node. Re-running the same command (or pressing `s`/`l`
-on the same job in the TUI) reattaches to the running session. Detach without
+running on the compute node. Re-running the same command (or pressing `s` on
+the same job in the TUI) reattaches to the running session. Detach without
 ending: `Ctrl-B D`. End the session: `exit` from inside.
 
-If tmux isn't installed on the compute node, the launcher falls back to
-running the command directly (with a warning) — same UX as before, just no
-disconnect resilience.
+Run `claude` directly from inside the shell session — it gets the same
+disconnect resilience for free (`Ctrl-B D` leaves it thinking; reattach later).
+
+If tmux isn't installed on the compute node, the launcher falls back to a
+plain bash (with a warning) — same UX, just no disconnect resilience.
 
 ---
 

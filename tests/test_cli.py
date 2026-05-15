@@ -104,19 +104,19 @@ def test_port_rejects_garbage() -> None:
     assert "Invalid port spec" in result.stdout
 
 
-def test_claude_passes_suffix_through(monkeypatch) -> None:
-    """``rci claude FOLDER SUFFIX`` propagates the suffix to ``launch_claude``."""
+def test_shell_passes_suffix_through(monkeypatch) -> None:
+    """``rci shell FOLDER SUFFIX`` propagates the suffix to ``launch_shell``."""
     captured: dict = {}
 
-    def fake_launch_claude(a, folder, cfg, *, suffix=""):
+    def fake_launch_shell(a, folder, cfg, *, suffix=""):
         captured.update({"node": a.node, "folder": folder, "suffix": suffix})
         return 0
 
-    monkeypatch.setattr(launch, "launch_claude", fake_launch_claude)
+    monkeypatch.setattr(launch, "launch_shell", fake_launch_shell)
     monkeypatch.setattr(
         alloc_mod, "select_or_submit",
         lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
     )
-    result = runner.invoke(app, ["claude", "sam2rl", "exp1"])
+    result = runner.invoke(app, ["shell", "sam2rl", "exp1"])
     assert result.exit_code == 0
     assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl", "suffix": "exp1"}

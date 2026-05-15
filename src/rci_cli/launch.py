@@ -82,13 +82,6 @@ def _tmux_wrap(session: str, inner: str) -> str:
     )
 
 
-def launch_claude(alloc: Allocation, folder: str, cfg: Config, *, suffix: str = "") -> int:
-    sess = session_name("claude", folder, suffix, home=cfg.home)
-    print(f"→ {alloc.node} (job {alloc.jobid}): claude session '{sess}' in {folder}")
-    script = _tmux_wrap(sess, _inner_command(folder, cfg, exec_target="claude"))
-    return ssh.run(alloc.node, script, tty=True, check=False)
-
-
 def launch_shell(alloc: Allocation, folder: str, cfg: Config, *, suffix: str = "") -> int:
     sess = session_name("shell", folder, suffix, home=cfg.home)
     print(f"→ {alloc.node} (job {alloc.jobid}): shell session '{sess}' in {folder}")

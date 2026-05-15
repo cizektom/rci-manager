@@ -239,7 +239,6 @@ class JobsPanel(Container):
         Binding("r", "refresh", "Refresh"),
         Binding("c", "cancel_job", "Cancel"),
         Binding("s", "shell_into", "Shell"),
-        Binding("l", "claude_into", "Claude"),
         Binding("o", "code_into", "VS Code"),
         Binding("n", "submit_cpu", "+ CPU"),
         Binding("g", "submit_gpu", "+ GPU"),
@@ -378,9 +377,6 @@ class JobsPanel(Container):
     def action_shell_into(self) -> None:
         self._launch_on_selected("shell")
 
-    def action_claude_into(self) -> None:
-        self._launch_on_selected("claude")
-
     def action_code_into(self) -> None:
         self._launch_on_selected("code")
 
@@ -405,15 +401,11 @@ class JobsPanel(Container):
             self._notify_action(f"opening VS Code on {row.node}")
             launch.launch_code(a, folder, cfg)
             return
-        # shell / claude: suspend the TUI so ssh has the terminal. The remote
-        # command is tmux-wrapped, so detaching with Ctrl-B D leaves the session
-        # alive on the compute node; re-pressing the key reattaches.
+        # shell: suspend the TUI so ssh has the terminal. The remote command is
+        # tmux-wrapped, so Ctrl-B D detaches without ending the session.
         self._notify_action(f"attaching to {row.node} ({kind})… Ctrl-B D detaches, exit ends")
         with self.app.suspend():
-            if kind == "shell":
-                launch.launch_shell(a, folder, cfg)
-            else:
-                launch.launch_claude(a, folder, cfg)
+            launch.launch_shell(a, folder, cfg)
         self._notify_action(f"returned from {row.node}")
         self.refresh_jobs()
 

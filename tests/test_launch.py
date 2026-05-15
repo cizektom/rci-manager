@@ -102,27 +102,19 @@ def _patch_ssh(monkeypatch) -> dict:
     return captured
 
 
-def test_launch_claude_wraps_in_tmux(monkeypatch, cfg: Config) -> None:
-    captured = _patch_ssh(monkeypatch)
-    rc = launch.launch_claude(Allocation(node="n01", jobid="1234"), "/home/cizekto2/sam2rl", cfg)
-    assert rc == 0
-    assert captured["host"] == "n01"
-    assert captured["tty"] is True
-    assert "tmux new-session -A -s claude-sam2rl" in captured["cmd"]
-    assert "exec claude" in captured["cmd"]
-
-
 def test_launch_shell_wraps_in_tmux(monkeypatch, cfg: Config) -> None:
     captured = _patch_ssh(monkeypatch)
     rc = launch.launch_shell(Allocation(node="g05", jobid="5555"), "/home/cizekto2", cfg)
     assert rc == 0
+    assert captured["host"] == "g05"
+    assert captured["tty"] is True
     assert "tmux new-session -A -s shell-home" in captured["cmd"]
     assert "exec bash -i" in captured["cmd"]
 
 
-def test_launch_claude_with_suffix(monkeypatch, cfg: Config) -> None:
+def test_launch_shell_with_suffix(monkeypatch, cfg: Config) -> None:
     captured = _patch_ssh(monkeypatch)
-    launch.launch_claude(
+    launch.launch_shell(
         Allocation(node="n01", jobid="1"), "/home/cizekto2/sam2rl", cfg, suffix="exp1"
     )
-    assert "tmux new-session -A -s claude-sam2rl-exp1" in captured["cmd"]
+    assert "tmux new-session -A -s shell-sam2rl-exp1" in captured["cmd"]
