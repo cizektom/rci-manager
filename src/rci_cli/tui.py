@@ -249,10 +249,12 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # Sync the GPUs row visibility to the restored partition type — if the
         # user's last submission was a GPU job, the field should already be visible.
         self._apply_gpu_visibility(self._init_ptype)
-        # Land focus on Submit so the common case — accept the prefilled
-        # defaults — is just one Enter press. Tab/Shift-Tab still walks back
-        # to the form fields when the user wants to change something.
-        self.query_one("#ok", Button).focus()
+        # Don't force focus — Textual's default lands on the first focusable
+        # widget (partition-type Select), so Tab walks the form naturally:
+        # partition-type → partition-class → cores → gpus → mem → time →
+        # Submit → Cancel. Submission requires Enter on the Submit button
+        # (or click); Enter inside an Input advances to the next field via
+        # the Input.Submitted handler below.
 
     def _apply_gpu_visibility(self, ptype: str) -> None:
         is_gpu_type = ptype != "cpu"
@@ -892,12 +894,13 @@ FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
 }
 #jobs-table > .datatable--hover { background: ansi_default; }
 
-/* Modals: bordered dialog, centered. Backdrop is a light translucent tint —
-   the dashboard stays clearly visible (just slightly dimmed) so you don't
-   lose the context of which job is highlighted while the modal is open. */
+/* Modals: bordered dialog, centered, fully transparent backdrop — the
+   dashboard underneath shows through at full brightness around the modal
+   box. The modal-box itself is opaque (default bg + cyan border) so its
+   content stays crisp; only the area outside the box is "see-through". */
 ConfirmModal, NewInstanceModal, FolderModal {
     align: center middle;
-    background: black 25%;
+    background: transparent;
 }
 
 #partition-row { height: auto; padding-bottom: 1; }
