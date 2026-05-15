@@ -47,10 +47,10 @@ RUNNING_STATES = frozenset({"R", "RUNNING"})
 class ConfirmModal(ModalScreen[bool]):
     """Generic yes/no confirmation. Returns True/False via ``dismiss``.
 
-    Initial focus picks the *safe* button: ``No`` for ``dangerous=True``
-    confirms so Enter aborts the destructive action by default. Non-dangerous
-    confirms focus ``Yes`` since pressing Enter to accept is the common case.
-    Tab toggles between the two; ``y``/``n``/``q``/Esc work from anywhere.
+    Initial focus is always on the ``No`` button so Enter aborts by default,
+    dangerous or not. To proceed, Tab to ``Yes`` (or press ``y`` anywhere).
+    This eliminates the failure mode where a user reflex-confirms a dialog
+    that just popped up without reading it.
     """
 
     # Disable Textual's "auto-focus first focusable" — we pick the safe
@@ -83,10 +83,9 @@ class ConfirmModal(ModalScreen[bool]):
                 yield Button("No", id="no")
 
     def on_mount(self) -> None:
-        # Safe default: for dangerous confirms (e.g. "cancel job?") Enter
-        # should abort. For neutral confirms, Enter accepts.
-        target = "#no" if self.dangerous else "#yes"
-        self.query_one(target, Button).focus()
+        # Always focus ``No`` on open. Enter never proceeds unintentionally —
+        # the user must Tab to ``Yes`` or press ``y`` to proceed.
+        self.query_one("#no", Button).focus()
 
     @on(Button.Pressed, "#yes")
     def _yes(self) -> None:
@@ -118,17 +117,6 @@ class AllocParams:
         return "gpu" if self.gpus > 0 else "cpu"
 
 
-# Allowed partition components on the RCI cluster. The full partition name is
-# ``<type><class>`` (e.g. ``gpufast``, ``cpu``, ``h200extralong``). The
-# ``(normal)`` class maps to no suffix.
-PARTITION_TYPES: tuple[str, ...] = ("cpu", "gpu", "amdgpu", "h200")
-PARTITION_CLASSES: tuple[tuple[str, str], ...] = (
-    ("fast", "fast"),
-    ("(normal)", ""),
-    ("long", "long"),
-    ("extralong", "extralong"),
-)
-
 # Walltime is a Select (not an Input) so printable keys like ``q`` fall through
 # to the modal-level cancel binding instead of being typed into the field.
 # These covers the common cluster ranges (fast caps at 4h, normal at 24h, long
@@ -153,10 +141,16 @@ def assemble_partition(ptype: str, pclass: str) -> str:
     return f"{ptype}{pclass}"
 
 
-def validate_alloc(ptype: str, gpus: int) -> str | None:
-    """Return an error message if the (type, gpus) combo is invalid, else ``None``."""
-    if gpus > 0 and ptype == "cpu":
-        return "CPU partition doesn't accept GPUs — pick gpu / amdgpu / h200."
+def validate_alloc(ptype: str, gpus: int, gpu_types: tuple[str, ...]) -> str | None:
+    """Return an error message if the (type, gpus) combo is invalid, else ``None``.
+
+    ``gpu_types`` is the list of partition types that accept ``--gres=gpu:N``
+    on this cluster (from :attr:`Config.gpu_partition_types`). Anything not in
+    that list rejects ``gpus > 0``.
+    """
+    if gpus > 0 and ptype not in gpu_types:
+        choices = ", ".join(gpu_types) if gpu_types else "(none configured)"
+        return f"Partition type '{ptype}' doesn't accept GPUs — pick one of: {choices}."
     return None
 
 
@@ -239,7 +233,11 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # doesn't crash the modal — fall back silently instead.
         last = state.get_last_instance_params() or {}
         cpu_cores, cpu_mem, cpu_time = cfg.cpu_defaults
-        valid_classes = {value for _label, value in PARTITION_CLASSES}
+        valid_classes = {value for _label, value in cfg.partition_classes}
+        default_ptype = cfg.partition_types[0] if cfg.partition_types else "cpu"
+        default_pclass = (
+            cfg.partition_classes[0][1] if cfg.partition_classes else ""
+        )
 
         ptype = last.get("partition_type")
         pclass = last.get("partition_class")
@@ -248,8 +246,12 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         mem_gb = last.get("mem_gb")
         walltime = last.get("walltime")
 
-        self._init_ptype = ptype if isinstance(ptype, str) and ptype in PARTITION_TYPES else "cpu"
-        self._init_pclass = pclass if isinstance(pclass, str) and pclass in valid_classes else "fast"
+        self._init_ptype = (
+            ptype if isinstance(ptype, str) and ptype in cfg.partition_types else default_ptype
+        )
+        self._init_pclass = (
+            pclass if isinstance(pclass, str) and pclass in valid_classes else default_pclass
+        )
         self._init_cores = str(cores) if isinstance(cores, int) and cores > 0 else str(cpu_cores)
         self._init_gpus = str(gpus) if isinstance(gpus, int) and gpus >= 0 else "0"
         self._init_mem = str(mem_gb) if isinstance(mem_gb, int) and mem_gb > 0 else str(cpu_mem)
@@ -274,13 +276,13 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
             yield Label("Partition")
             with Horizontal(id="partition-row"):
                 yield Select(
-                    [(t, t) for t in PARTITION_TYPES],
+                    [(t, t) for t in self.cfg.partition_types],
                     value=self._init_ptype,
                     id="partition-type",
                     allow_blank=False,
                 )
                 yield Select(
-                    list(PARTITION_CLASSES),
+                    list(self.cfg.partition_classes),
                     value=self._init_pclass,
                     id="partition-class",
                     allow_blank=False,
@@ -322,7 +324,7 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # — see :meth:`action_submit`.
 
     def _apply_gpu_visibility(self, ptype: str) -> None:
-        is_gpu_type = ptype != "cpu"
+        is_gpu_type = ptype in self.cfg.gpu_partition_types
         self.query_one("#gpus-label", Label).display = is_gpu_type
         self.query_one("#gpus", Input).display = is_gpu_type
 
@@ -330,10 +332,11 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
     def _type_changed(self, event: Select.Changed) -> None:
         ptype = str(event.value)
         self._apply_gpu_visibility(ptype)
-        # Quality-of-life: switching to a GPU type prefills GPUs=1 (if still 0);
-        # switching back to CPU resets it to 0 so the validation always passes.
+        # Quality-of-life: switching to a GPU-capable type prefills GPUs=1
+        # (if still 0); switching to a non-GPU type resets it to 0 so the
+        # validation always passes.
         gpus_input = self.query_one("#gpus", Input)
-        if ptype == "cpu":
+        if ptype not in self.cfg.gpu_partition_types:
             gpus_input.value = "0"
         elif gpus_input.value in ("", "0"):
             gpus_input.value = "1"
@@ -370,7 +373,7 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         except ValueError:
             self.app.notify("Invalid number", severity="error")
             return
-        err = validate_alloc(ptype, gpus)
+        err = validate_alloc(ptype, gpus, self.cfg.gpu_partition_types)
         if err is not None:
             self.app.notify(err, severity="error", timeout=6)
             return

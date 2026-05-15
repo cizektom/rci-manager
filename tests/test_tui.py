@@ -674,21 +674,31 @@ def test_assemble_partition_concatenates_type_and_class() -> None:
     assert assemble_partition("h200", "extralong") == "h200extralong"
 
 
-def test_validate_alloc_rejects_cpu_with_gpus() -> None:
+def test_validate_alloc_rejects_non_gpu_type_with_gpus() -> None:
     from rci_cli.tui import validate_alloc
 
-    assert validate_alloc("cpu", 0) is None
-    assert validate_alloc("gpu", 1) is None
-    assert validate_alloc("amdgpu", 2) is None
-    assert validate_alloc("h200", 1) is None
-    err = validate_alloc("cpu", 1)
-    assert err is not None and "CPU" in err
+    gpu_types = ("gpu", "amdgpu", "h200")
+    # No GPUs requested → any partition type is fine.
+    assert validate_alloc("cpu", 0, gpu_types) is None
+    # GPU types accept gpus > 0.
+    assert validate_alloc("gpu", 1, gpu_types) is None
+    assert validate_alloc("amdgpu", 2, gpu_types) is None
+    assert validate_alloc("h200", 1, gpu_types) is None
+    # Anything outside the configured gpu_types list rejects gpus > 0.
+    err = validate_alloc("cpu", 1, gpu_types)
+    assert err is not None and "doesn't accept GPUs" in err
+    # A different cluster could allow GPUs only on a single type — works.
+    err = validate_alloc("cpu", 1, ("v100",))
+    assert err is not None and "v100" in err
 
 
 def test_partition_types_and_classes_cover_known_partitions() -> None:
-    """The 16 advertised partitions (gpufast … cpuextralong) must all be assemblable."""
-    from rci_cli.tui import PARTITION_CLASSES, PARTITION_TYPES, assemble_partition
+    """The 16 advertised partitions (gpufast … cpuextralong) must all be assemblable
+    from the ``Config`` defaults — defaults still match the RCI cluster."""
+    from rci_cli.config import Config
+    from rci_cli.tui import assemble_partition
 
+    cfg = Config()
     expected = {
         "cpufast", "cpu", "cpulong", "cpuextralong",
         "gpufast", "gpu", "gpulong", "gpuextralong",
@@ -697,8 +707,8 @@ def test_partition_types_and_classes_cover_known_partitions() -> None:
     }
     assembled = {
         assemble_partition(t, c_value)
-        for t in PARTITION_TYPES
-        for _, c_value in PARTITION_CLASSES
+        for t in cfg.partition_types
+        for _, c_value in cfg.partition_classes
     }
     assert assembled == expected
 
@@ -785,8 +795,9 @@ async def test_confirm_modal_dangerous_focuses_no(monkeypatch) -> None:
         assert app.focused is scr.query_one("#no", Button)
 
 
-async def test_confirm_modal_neutral_focuses_yes(monkeypatch) -> None:
-    """Non-dangerous confirms focus ``Yes`` (Enter accepts is the common case)."""
+async def test_confirm_modal_neutral_also_focuses_no(monkeypatch) -> None:
+    """Even non-dangerous confirms default to ``No`` — Enter never confirms
+    on reflex. To proceed, the user must Tab to ``Yes`` (or press ``y``)."""
     from textual.widgets import Button
 
     from rci_cli.tui import ConfirmModal
@@ -797,4 +808,4 @@ async def test_confirm_modal_neutral_focuses_yes(monkeypatch) -> None:
         app.push_screen(ConfirmModal("Proceed?"), lambda _b: None)
         await pilot.pause()
         scr = app.screen
-        assert app.focused is scr.query_one("#yes", Button)
+        assert app.focused is scr.query_one("#no", Button)
