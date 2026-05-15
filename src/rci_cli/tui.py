@@ -193,10 +193,15 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # modal and returns to the jobs panel. App-level ``q`` (quit) only
         # fires on the main screen because modal-screen bindings shadow it.
         Binding("escape,q", "cancel", "Cancel", show=False),
-        # No screen-level Enter binding: Enter while editing an Input would
-        # otherwise submit the whole form mid-type. Submitting now requires
-        # focus on the Submit button (which consumes Enter natively via
-        # Button.Pressed). Enter on a Select still opens its dropdown.
+        # Enter submits from anywhere in the form (priority=True overrides the
+        # focused widget). Initial focus is on partition-type so Tab walks the
+        # form naturally; pressing Enter at any point confirms current values
+        # rather than waiting until you Tab onto Submit.
+        # Trade-off: opening a partition Select dropdown uses Space or Down
+        # (Enter is reserved for submit). Once the dropdown is open it's a
+        # nested screen so its own Enter binding wins — confirming a
+        # highlighted option still works as expected.
+        Binding("enter", "submit", "Submit", show=False, priority=True),
     ]
 
     def __init__(self, cfg: Config, *, allow_back: bool = False) -> None:
@@ -269,21 +274,21 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
                 allow_blank=False,
             )
             with Horizontal(id="modal-buttons"):
-                # Cancel comes FIRST in compose order so ``ok`` (Submit) is
-                # the last focusable widget. With initial focus on Submit
-                # (below), plain Tab wraps to partition-type — natural
-                # "step into the form" after rejecting the prefilled defaults.
-                yield Button("Cancel", id="cancel")
+                # Visual order: Submit on the left (primary action),
+                # Cancel on the right. Compose order matches because Tab
+                # naturally walks form → buttons in reading order.
                 yield Button("Submit", id="ok")
+                yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
         # Sync the GPUs row visibility to the restored partition type — if the
         # user's last submission was a GPU job, the field should already be visible.
         self._apply_gpu_visibility(self._init_ptype)
-        # Focus the Submit button: the first Enter confirms the pre-filled
-        # defaults; plain Tab wraps to partition-type (because Cancel is now
-        # earlier in compose order), so editing the form is one Tab away.
-        self.query_one("#ok", Button).focus()
+        # Focus the first form field so Tab walks through the form naturally
+        # (partition-type → partition-class → cores → … → buttons). Enter
+        # still submits from anywhere via the priority binding above, so the
+        # "accept defaults" path doesn't require any navigation.
+        self.query_one("#partition-type", Select).focus()
 
     def _apply_gpu_visibility(self, ptype: str) -> None:
         is_gpu_type = ptype != "cpu"
@@ -486,13 +491,17 @@ class JobRow:
 class JobsPanel(Container):
     """Live jobs dashboard with action keys."""
 
+    # Order = footer order, picked for daily-use frequency: connect (s/e), then
+    # create (n), then less-frequent ssh-to-login (f) and manual refresh (r).
+    # Destructive Cancel last so it's hard to hit by accident; app-level Quit
+    # then appears after these.
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("s", "shell_into", "Shell"),
+        Binding("e", "editor_into", "Editor"),
+        Binding("n", "new_instance", "New"),
+        Binding("l", "shell_frontend", "Login"),
         Binding("r", "refresh", "Refresh"),
         Binding("c", "cancel_job", "Cancel"),
-        Binding("s", "shell_into", "Shell"),
-        Binding("f", "shell_frontend", "Frontend"),
-        Binding("e", "editor_into", "Editor"),
-        Binding("n", "new_instance", "New instance"),
     ]
 
     def __init__(self, **kwargs) -> None:

@@ -136,6 +136,40 @@ async def test_refresh_populates_table(monkeypatch) -> None:
         assert panel._rows[1].name == "dev-gpu"
 
 
+async def test_frontend_action_sshes_to_login_host(monkeypatch) -> None:
+    """Pressing ``f`` opens an interactive ssh session to ``cfg.ssh_host`` with
+    no folder prompt and no allocation involved."""
+    from contextlib import contextmanager
+
+    from rci_cli import ssh as ssh_mod
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+
+    calls: list[dict] = []
+
+    def fake_run(host, remote_cmd="", *, tty=False, check=True, stdin=None):
+        calls.append({"host": host, "remote_cmd": remote_cmd, "check": check})
+        return 0
+
+    monkeypatch.setattr(ssh_mod, "run", fake_run)
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+
+        @contextmanager
+        def noop_suspend():
+            yield
+
+        monkeypatch.setattr(app, "suspend", noop_suspend)
+        panel.action_shell_frontend()
+
+    assert len(calls) == 1, calls
+    assert calls[0]["host"] == "rci"
+    assert calls[0]["remote_cmd"] == ""
+
+
 async def test_shell_action_opens_folder_modal(monkeypatch) -> None:
     """Pressing `s` first pops a FolderModal so the user can choose a directory."""
     from rci_cli.tui import FolderModal
@@ -359,10 +393,10 @@ async def test_new_instance_modal_q_dismisses_from_walltime(monkeypatch, tmp_pat
     assert captured["params"] is None, "q on the walltime Select should dismiss the modal"
 
 
-async def test_new_instance_modal_initial_focus_lands_on_submit(monkeypatch, tmp_path) -> None:
-    """Opening the modal must focus the Submit button so the very first Enter
-    confirms the pre-filled defaults (last-used params or Config defaults)."""
-    from textual.widgets import Button
+async def test_new_instance_modal_initial_focus_lands_in_form(monkeypatch, tmp_path) -> None:
+    """Initial focus is on the first form field so Tab walks the form
+    naturally (partition-type → partition-class → cores → …)."""
+    from textual.widgets import Select
 
     from rci_cli.tui import NewInstanceModal
     from rci_cli.config import Config
@@ -375,9 +409,31 @@ async def test_new_instance_modal_initial_focus_lands_on_submit(monkeypatch, tmp
         app.push_screen(NewInstanceModal(Config()), lambda _p: None)
         await pilot.pause()
         scr = app.screen
-        assert app.focused is scr.query_one("#ok", Button), (
-            f"expected Submit button focused, got {app.focused!r}"
+        assert app.focused is scr.query_one("#partition-type", Select), (
+            f"expected partition-type Select focused, got {app.focused!r}"
         )
+
+
+async def test_new_instance_modal_enter_submits_from_form_field(monkeypatch, tmp_path) -> None:
+    """The priority Enter binding submits the form even when focus is on a form
+    field (Select / Input), not just the Submit button."""
+    from rci_cli.tui import AllocParams, NewInstanceModal
+    from rci_cli.config import Config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: list[object] = []
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), captured.append)
+        await pilot.pause()
+        # Focus is on the first form field (partition-type Select) — confirmed
+        # by the test above. Pressing Enter here should still submit.
+        await pilot.press("enter")
+        await pilot.pause()
+    assert len(captured) == 1, "Enter on a form field must dismiss the modal"
+    assert isinstance(captured[0], AllocParams)
 
 
 async def test_new_instance_modal_submit_button_uses_defaults(monkeypatch, tmp_path) -> None:
