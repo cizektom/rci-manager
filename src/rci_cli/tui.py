@@ -29,7 +29,7 @@ from textual.widgets import (
 )
 
 from . import alloc as alloc_mod
-from . import launch, sessions, slurm
+from . import launch, sessions, slurm, state
 from .config import Config, load
 from .sessions import SessionCounts
 
@@ -240,11 +240,18 @@ class FolderModal(ModalScreen[str | None]):
     def __init__(self, prompt: str = "Folder on compute node") -> None:
         super().__init__()
         self.prompt = prompt
+        # Pre-fill with whatever the user typed last time (persisted across
+        # sessions via state.json) so the common case is just Enter.
+        self.default_folder = state.get_last_folder()
 
     def compose(self) -> ComposeResult:
         with Container(id="modal-box"):
             yield Label(f"[b]{self.prompt}[/b]  [dim](empty = home)[/dim]", id="modal-title")
-            yield Input(value="", id="folder", placeholder="e.g. sam2rl  or  /scratch/exp42")
+            yield Input(
+                value=self.default_folder,
+                id="folder",
+                placeholder="e.g. sam2rl  or  /scratch/exp42",
+            )
             with Horizontal(id="modal-buttons"):
                 yield Button("Open", variant="primary", id="ok")
                 yield Button("Cancel", id="cancel")
@@ -252,7 +259,9 @@ class FolderModal(ModalScreen[str | None]):
     @on(Button.Pressed, "#ok")
     @on(Input.Submitted)
     def _ok(self) -> None:
-        self.dismiss(self.query_one("#folder", Input).value.strip())
+        folder = self.query_one("#folder", Input).value.strip()
+        state.set_last_folder(folder)
+        self.dismiss(folder)
 
     @on(Button.Pressed, "#cancel")
     def _cancel(self) -> None:
@@ -297,6 +306,19 @@ class JobRow:
             gres=parts[8],
             node=parts[9],
         )
+
+    @property
+    def node_display(self) -> str:
+        """Node name for running jobs; ``—`` when squeue gave us a ``(Reason)`` instead.
+
+        ``%R`` doubles as node-list (running) and reason (pending) — we keep
+        the raw text in ``self.node`` for the action-guard check
+        (``startswith('(')``) but show a dash in the table.
+        """
+        n = (self.node or "").strip()
+        if not n or n.startswith("("):
+            return "—"
+        return n
 
     @property
     def gpu_count(self) -> str:
@@ -371,7 +393,7 @@ class JobsPanel(Container):
             "CPU",
             "Mem",
             "GPU",
-            "Node / Reason",
+            "Node",
             "Sessions",
         )
         table.focus()
@@ -427,7 +449,7 @@ class JobsPanel(Container):
                 r.cpus or "—",
                 r.mem or "—",
                 r.gpu_count,
-                r.node,
+                r.node_display,
                 _sessions_cell(sess, r.jobid),
                 key=r.jobid,
             )
@@ -480,7 +502,7 @@ class JobsPanel(Container):
             f"[b]{row.state}[/]  [dim]on[/]  {row.partition}  [dim]·[/dim]  "
             f"[b]{row.cpus}[/] CPU · [b]{row.mem}[/]{gpu_seg}  [dim]·[/dim]  "
             f"used [b]{row.time}[/] / limit [b]{row.limit}[/]  [dim]·[/dim]  "
-            f"node [b]{row.node or '—'}[/]"
+            f"node [b]{row.node_display}[/]"
         )
 
     @on(DataTable.RowHighlighted, "#jobs-table")
@@ -562,7 +584,12 @@ class JobsPanel(Container):
         if folder is None:
             return  # user cancelled the folder prompt
         cfg = load()
-        alloc = alloc_mod.find_strongest(cfg)
+        # Prefer the selected row when it's a usable running allocation — the
+        # user moved the cursor there for a reason. Only fall back to
+        # find_strongest (which scans for the named vscode jobs) when nothing
+        # usable is highlighted, and only spawn a fresh instance when neither
+        # path turns up a node.
+        alloc = self._alloc_from_selected_row() or alloc_mod.find_strongest(cfg)
         if alloc is not None:
             self._attach_to(kind, alloc, folder)
             return
@@ -573,6 +600,19 @@ class JobsPanel(Container):
                 self._submit_then_attach(kind, params, folder) if params else None
             ),
         )
+
+    def _alloc_from_selected_row(self) -> alloc_mod.Allocation | None:
+        """Promote the highlighted row to an Allocation if it's running on a node."""
+        row = self._selected_row()
+        if row is None:
+            return None
+        if row.state not in RUNNING_STATES:
+            return None
+        # PENDING rows put the reason (``(Resources)``) into the NODE column;
+        # only real hostnames make for a working ssh target.
+        if not row.node or row.node.startswith("("):
+            return None
+        return alloc_mod.Allocation(node=row.node, jobid=row.jobid)
 
     def _attach_to(
         self, kind: str, alloc: alloc_mod.Allocation, folder_arg: str = ""
