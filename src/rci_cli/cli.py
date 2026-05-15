@@ -17,7 +17,6 @@ from .config import Config, load
 
 app = typer.Typer(
     no_args_is_help=True,
-    add_completion=False,
     help="CLI + TUI for the RCI CVUT Slurm cluster.",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
