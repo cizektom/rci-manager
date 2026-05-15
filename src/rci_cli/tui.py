@@ -39,6 +39,10 @@ from .config import Config, load
 
 REFRESH_INTERVAL = 5.0
 
+# squeue's ``%T`` long-form yields ``RUNNING``/``PENDING``/…; some setups still use
+# the short codes (``R``/``PD``). Accept both so the action guards are robust.
+RUNNING_STATES = frozenset({"R", "RUNNING"})
+
 
 # ──────────────────────────── modals ────────────────────────────────────────
 
@@ -367,7 +371,7 @@ class JobsPanel(Container):
         if row is None:
             self.app.notify("Nothing selected.", severity="warning")
             return
-        if row.state != "R":
+        if row.state not in RUNNING_STATES:
             self.app.notify(f"Job {row.jobid} is not running ({row.state}).", severity="warning")
             return
         if not row.node or row.node.startswith("("):
