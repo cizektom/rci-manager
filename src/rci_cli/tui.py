@@ -155,14 +155,19 @@ def last_meaningful_line(output: str) -> str:
     return "(no output)"
 
 
-class NewInstanceModal(ModalScreen[AllocParams | None]):
+class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
     """Unified configure-and-submit dialog for both CPU and GPU allocations.
 
     No CPU/GPU toggle — the *kind* is derived from the ``GPUs`` field
     (``> 0`` ⇒ GPU job, dispatched to ``slurm.submit_gpu``; ``0`` ⇒ CPU
-    job, dispatched to ``slurm.submit_cpu``). A hint under the partition
-    field lists known partition names; if ``GPUs > 0`` the partition must
-    match one of the GPU-capable patterns (``gpu*``, ``amdgpu*``, ``h200*``).
+    job, dispatched to ``slurm.submit_cpu``).
+
+    Dismiss values:
+      - :class:`AllocParams` → user clicked Submit
+      - ``None`` → user clicked the explicit Cancel button (abort)
+      - the string ``"back"`` → user pressed ``q``/``escape`` while the caller
+        had opted into step-back navigation via ``allow_back=True``. Caller
+        re-opens the previous modal (typically :class:`FolderModal`).
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -176,9 +181,14 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
         # Button.Pressed). Enter on a Select still opens its dropdown.
     ]
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, *, allow_back: bool = False) -> None:
         super().__init__()
         self.cfg = cfg
+        # When True, ``q``/``escape`` dismisses with the ``"back"`` sentinel
+        # so the caller can re-open the previous step (e.g. FolderModal).
+        # False for the standalone ``n`` flow where there's nothing to step
+        # back to.
+        self.allow_back = allow_back
         # Pre-fill from the last submitted params (persisted across sessions),
         # falling back to ``Config`` defaults if nothing's saved or a field
         # got corrupted. Validate enum-like fields so a stale state.json
@@ -239,6 +249,10 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
         # Sync the GPUs row visibility to the restored partition type — if the
         # user's last submission was a GPU job, the field should already be visible.
         self._apply_gpu_visibility(self._init_ptype)
+        # Land focus on Submit so the common case — accept the prefilled
+        # defaults — is just one Enter press. Tab/Shift-Tab still walks back
+        # to the form fields when the user wants to change something.
+        self.query_one("#ok", Button).focus()
 
     def _apply_gpu_visibility(self, ptype: str) -> None:
         is_gpu_type = ptype != "cpu"
@@ -304,10 +318,14 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
 
     @on(Button.Pressed, "#cancel")
     def _cancel(self) -> None:
+        # Explicit Cancel button always means "abort this flow", never
+        # "step back to the folder picker" — q/escape handle the step-back.
         self.dismiss(None)
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        # ``q``/``escape``: step back to the prior modal if the caller is
+        # willing to handle it; otherwise behave like the Cancel button.
+        self.dismiss("back" if self.allow_back else None)
 
     def on_key(self, event: events.Key) -> None:
         """Let ←/→ swap focus between the Submit and Cancel buttons.
@@ -650,13 +668,28 @@ class JobsPanel(Container):
         if alloc is not None:
             self._attach_to(kind, alloc, folder)
             return
-        # No usable selection — collect alloc params, submit, attach.
+        # No usable selection — collect alloc params, submit, attach. Opt
+        # into ``allow_back`` so q/escape on the resources modal returns
+        # to the folder picker instead of dropping the whole flow.
         self.app.push_screen(
-            NewInstanceModal(cfg),
-            lambda params: (
-                self._submit_then_attach(kind, params, folder) if params else None
-            ),
+            NewInstanceModal(cfg, allow_back=True),
+            lambda result: self._after_new_instance(kind, folder, result),
         )
+
+    def _after_new_instance(
+        self, kind: str, folder: str, result: "AllocParams | str | None"
+    ) -> None:
+        """Dispatch on the resources modal's return: submit / step back / abort."""
+        if result is None:
+            return  # Cancel button → drop the whole flow
+        if result == "back":
+            # Step back to the folder picker. FolderModal pre-fills with the
+            # persisted last_folder, which is exactly the one the user just
+            # submitted — they land where they were and can edit.
+            self._pick_folder_then(kind)
+            return
+        assert isinstance(result, AllocParams)
+        self._submit_then_attach(kind, result, folder)
 
     def _alloc_from_selected_row(self) -> alloc_mod.Allocation | None:
         """Promote the highlighted row to an Allocation if it's running on a node."""
@@ -775,6 +808,16 @@ class JobsPanel(Container):
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._notify_error, f"submit failed: {e}")
             return
+        # salloc runs with check=False, so non-zero exits land here as plain
+        # output (e.g. ``salloc: error: Invalid partition: foo``). No jobid in
+        # the output ⇒ surface it as an error, not a fake-positive "submitted".
+        jobid = parse_jobid_from_salloc(out)
+        if jobid is None:
+            self.app.call_from_thread(
+                self._notify_error,
+                f"submit failed: {last_meaningful_line(out)}",
+            )
+            return
         first_line = (out.strip().splitlines() or [""])[0]
         self.app.call_from_thread(self._notify_action, f"submitted: {first_line}")
         self.refresh_jobs()
@@ -849,15 +892,12 @@ FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
 }
 #jobs-table > .datatable--hover { background: ansi_default; }
 
-/* Modals: bordered dialog, centered, with a deeper translucent backdrop so
-   the dashboard reads as clearly "pushed back". Two layers do the lift:
-     1. The screen gets a darker (70%) black overlay — the dashboard is still
-        readable but visually demoted to context.
-     2. The modal box itself stays on default bg, so it pops against the
-        darkened backdrop, with a brighter cyan border to anchor the eye. */
+/* Modals: bordered dialog, centered. Backdrop is a light translucent tint —
+   the dashboard stays clearly visible (just slightly dimmed) so you don't
+   lose the context of which job is highlighted while the modal is open. */
 ConfirmModal, NewInstanceModal, FolderModal {
     align: center middle;
-    background: black 70%;
+    background: black 25%;
 }
 
 #partition-row { height: auto; padding-bottom: 1; }
@@ -867,9 +907,7 @@ ConfirmModal, NewInstanceModal, FolderModal {
 #modal-box {
     background: ansi_default;
     color: ansi_default;
-    border: round ansi_bright_cyan;
-    border-title-color: ansi_bright_cyan;
-    border-title-style: bold;
+    border: round ansi_cyan;
     padding: 1 2;
     width: 60;
     height: auto;
