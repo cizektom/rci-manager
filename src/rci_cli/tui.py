@@ -295,6 +295,11 @@ class JobsPanel(Container):
             )
         else:
             status.update("[yellow]○[/yellow] no running vscode allocation — press [b]n[/] or [b]g[/] to submit")
+        # Clear the "refreshing…" indicator if a manual refresh just completed.
+        # Other action messages (cancellations, submissions) are preserved.
+        action_log = self.query_one("#last-action", Static)
+        if str(action_log.renderable) == "refreshing…":
+            action_log.update("")
 
     # ----- selection helpers -----
 
