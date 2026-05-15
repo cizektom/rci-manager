@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-rci = "rci_cli.cli:app"
+rci-cli = "rci_cli.cli:app"
 
 [project.urls]
 Repository = "https://github.com/cizektom/rci-cli"
