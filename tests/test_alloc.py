@@ -27,13 +27,13 @@ def _patch_node(monkeypatch, mapping: dict[str, str]) -> None:
 
 
 def test_find_strongest_returns_gpu_when_present(monkeypatch, cfg: Config) -> None:
-    _patch_jobs(monkeypatch, {"vscode-gpu": ["2222"], "vscode": ["1111"]})
+    _patch_jobs(monkeypatch, {"dev-gpu": ["2222"], "dev": ["1111"]})
     _patch_node(monkeypatch, {"2222": "g05"})
     assert find_strongest(cfg) == Allocation(node="g05", jobid="2222")
 
 
 def test_find_strongest_falls_back_to_cpu_when_no_gpu(monkeypatch, cfg: Config) -> None:
-    _patch_jobs(monkeypatch, {"vscode": ["1111"]})
+    _patch_jobs(monkeypatch, {"dev": ["1111"]})
     _patch_node(monkeypatch, {"1111": "n01"})
     assert find_strongest(cfg) == Allocation(node="n01", jobid="1111")
 
@@ -45,7 +45,7 @@ def test_find_strongest_returns_none_when_no_jobs(monkeypatch, cfg: Config) -> N
 
 
 def test_find_strongest_returns_none_when_node_not_assigned(monkeypatch, cfg: Config) -> None:
-    _patch_jobs(monkeypatch, {"vscode": ["1111"]})
+    _patch_jobs(monkeypatch, {"dev": ["1111"]})
     _patch_node(monkeypatch, {})  # node_for returns ""
     assert find_strongest(cfg) is None
 
@@ -54,7 +54,7 @@ def test_find_strongest_returns_none_when_node_not_assigned(monkeypatch, cfg: Co
 
 
 def test_select_or_submit_reuses_existing_gpu(monkeypatch, cfg: Config) -> None:
-    _patch_jobs(monkeypatch, {"vscode-gpu": ["2222"]})
+    _patch_jobs(monkeypatch, {"dev-gpu": ["2222"]})
     _patch_node(monkeypatch, {"2222": "g05"})
     monkeypatch.setattr(slurm, "submit_cpu", lambda *a, **k: pytest.fail("should not submit"))
     monkeypatch.setattr(slurm, "submit_gpu", lambda *a, **k: pytest.fail("should not submit"))
@@ -64,7 +64,7 @@ def test_select_or_submit_reuses_existing_gpu(monkeypatch, cfg: Config) -> None:
 def test_select_or_submit_reuses_existing_cpu_when_not_requiring_gpu(
     monkeypatch, cfg: Config
 ) -> None:
-    _patch_jobs(monkeypatch, {"vscode": ["1111"]})
+    _patch_jobs(monkeypatch, {"dev": ["1111"]})
     _patch_node(monkeypatch, {"1111": "n01"})
     monkeypatch.setattr(slurm, "submit_cpu", lambda *a, **k: pytest.fail("should not submit"))
     assert select_or_submit(cfg, require_gpu=False) == Allocation(node="n01", jobid="1111")
@@ -75,9 +75,9 @@ def test_select_or_submit_submits_cpu_when_nothing_running(monkeypatch, cfg: Con
     job_state: dict[str, list[str]] = {}
 
     def fake_submit_cpu(_cfg, cores, mem, walltime):
-        # After submit, a running vscode job appears.
+        # After submit, a running dev job appears.
         state["submitted"] = True
-        job_state["vscode"] = ["3333"]
+        job_state["dev"] = ["3333"]
         return "Granted job allocation 3333"
 
     _patch_jobs_dynamic(monkeypatch, job_state)
@@ -97,7 +97,7 @@ def test_select_or_submit_require_gpu_submits_gpu_when_missing(
 
     def fake_submit_gpu(_cfg, gpus, cores, mem, walltime):
         state["submitted"] = True
-        job_state["vscode-gpu"] = ["4444"]
+        job_state["dev-gpu"] = ["4444"]
         return "Granted job allocation 4444"
 
     _patch_jobs_dynamic(monkeypatch, job_state)

@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from . import ssh
 from .config import Config
 
-SQUEUE_LIST_FORMAT = "%.10i %.9P %.10j %.8T %.10M %.10l %.6D %R"
+# Columns: jobid, partition, name, state, time-used, time-limit,
+#          cpus-requested, memory-min-per-node, generic-resources (gres), node/reason.
+# Reads as a single squeue call so we don't have to follow up with scontrol per job.
+SQUEUE_LIST_FORMAT = "%.10i %.9P %.12j %.8T %.10M %.10l %.5C %.6m %.8b %R"
 
 
 @dataclass(frozen=True)

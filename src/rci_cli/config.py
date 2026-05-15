@@ -13,8 +13,8 @@ class Config:
     home: str = "/home/cizekto2"
     cpu_partition: str = "cpufast"
     gpu_partition: str = "gpufast"
-    cpu_job_name: str = "vscode"
-    gpu_job_name: str = "vscode-gpu"
+    cpu_job_name: str = "dev"
+    gpu_job_name: str = "dev-gpu"
     # Conservative debug defaults — schedule fast, don't burn quota if you forget one.
     # Override per-allocation with --cores/--mem/--time or globally in ~/.config/rci-cli/config.toml.
     cpu_defaults: tuple[int, int, str] = (2, 4, "1:00:00")  # cores, memGB, walltime

@@ -145,17 +145,17 @@ def cancel_all() -> None:
     raise typer.Exit(code=rc)
 
 
-@app.command("cancel-vscode")
-def cancel_vscode() -> None:
-    """Cancel all ``vscode`` / ``vscode-gpu`` allocations (asks for confirmation)."""
+@app.command("cancel-dev")
+def cancel_dev() -> None:
+    """Cancel all rci-cli managed allocations (``dev`` / ``dev-gpu``)."""
     cfg = _cfg()
     ids = slurm.jobs_by_name(cfg, cfg.cpu_job_name, state="RUNNING") + slurm.jobs_by_name(
         cfg, cfg.gpu_job_name, state="RUNNING"
     )
     if not ids:
-        rprint("No VS Code allocations to cancel.")
+        rprint("No rci-managed allocations to cancel.")
         return
-    rprint("[bold]Will cancel these VS Code jobs:[/bold]")
+    rprint("[bold]Will cancel these allocations:[/bold]")
     for jid in ids:
         rprint(f"  {jid}")
     if not _confirm("Proceed? [y/N] "):

@@ -16,8 +16,8 @@ def test_defaults_match_zsh_helpers() -> None:
     assert c.home == "/home/cizekto2"
     assert c.cpu_partition == "cpufast"
     assert c.gpu_partition == "gpufast"
-    assert c.cpu_job_name == "vscode"
-    assert c.gpu_job_name == "vscode-gpu"
+    assert c.cpu_job_name == "dev"
+    assert c.gpu_job_name == "dev-gpu"
     # Conservative debug defaults — see config.py for the rationale.
     assert c.cpu_defaults == (2, 4, "1:00:00")
     assert c.gpu_defaults == (1, 2, 8, "1:00:00")

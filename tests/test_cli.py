@@ -91,7 +91,7 @@ def test_gpu_defaults(monkeypatch) -> None:
 
 
 def test_alloc_prints_node_and_jobid(monkeypatch) -> None:
-    monkeypatch.setattr(slurm, "jobs_by_name", lambda cfg, name, state="RUNNING": ["5555"] if name == "vscode-gpu" else [])
+    monkeypatch.setattr(slurm, "jobs_by_name", lambda cfg, name, state="RUNNING": ["5555"] if name == "dev-gpu" else [])
     monkeypatch.setattr(slurm, "node_for", lambda cfg, jid: "g05")
     result = runner.invoke(app, ["alloc"])
     assert result.exit_code == 0

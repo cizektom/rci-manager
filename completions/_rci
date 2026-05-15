@@ -26,7 +26,7 @@ _rci() {
                 'jobs:List your Slurm jobs (squeue)'
                 'cancel:Cancel a specific job by ID'
                 'cancel-all:Cancel ALL your jobs (with confirmation)'
-                'cancel-vscode:Cancel all vscode + vscode-gpu jobs'
+                'cancel-dev:Cancel all rci-managed allocations (dev + dev-gpu)'
             )
             interactive=(
                 'ssh:Open a shell on the RCI login host'
@@ -68,7 +68,7 @@ _rci() {
                 cancel)
                     _arguments '1:job id: '
                     ;;
-                cancel-all|cancel-vscode|jobs|ssh|tui|version)
+                cancel-all|cancel-dev|jobs|ssh|tui|version)
                     # no further args
                     ;;
             esac

@@ -37,7 +37,7 @@ shadow this binary).
 | `rci gpu`                            | `rci-gpu`                      | `--gpus N --cores N --mem GB --time HH:MM:SS`      |
 | `rci cancel JOBID`                   | `rci-cancel`                   |                                                    |
 | `rci cancel-all`                     | `rci-cancel-all`               | confirms first                                     |
-| `rci cancel-vscode`                  | `rci-cancel-vscode`            | confirms first                                     |
+| `rci cancel-dev`                     | `rci-cancel-vscode`            | cancel all rci-managed (`dev` + `dev-gpu`) allocs  |
 | `rci shell  [DIR] [--gpu]`           | `rci-shell` / `-gpu`           | interactive bash on the compute node               |
 | `rci editor [DIR] [--gpu]`           | `rci-code` / `-gpu`            | VS Code Remote-SSH (WSL → Windows `code.cmd`)      |
 | `rci alloc  [--gpu]`                 | `_rci_alloc`                   | prints `<node> <jobid>` — scripting-friendly       |
@@ -86,8 +86,8 @@ ssh_host = "rci"
 home = "/home/cizekto2"
 cpu_partition = "cpufast"
 gpu_partition = "gpufast"
-cpu_job_name = "vscode"
-gpu_job_name = "vscode-gpu"
+cpu_job_name = "dev"
+gpu_job_name = "dev-gpu"
 cpu_defaults = [2, 4, "1:00:00"]             # cores, memGB, walltime (conservative debug-friendly)
 gpu_defaults = [1, 2, 8, "1:00:00"]          # gpus, cores, memGB, walltime
 venv_activate = "$HOME/sam2rl/.venv/bin/activate"

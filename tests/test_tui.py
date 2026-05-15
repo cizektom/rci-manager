@@ -15,19 +15,35 @@ from rci_cli.tui import RUNNING_STATES, JobRow, JobsPanel, RciApp
 
 
 def test_jobrow_from_running_line() -> None:
-    # squeue's %T emits the long-form state name, e.g. "RUNNING" — not "R".
-    line = "   1234567   cpufast    vscode    RUNNING   00:05   04:00:00   1 n01"
+    # %T emits the long-form state; new columns CPUS/MIN_M/TRES_PER appear before NODELIST.
+    line = "  1234567  cpufast        dev  RUNNING    00:05  01:00:00     2    4G     N/A n01"
     r = JobRow.from_squeue_line(line)
     assert r is not None
     assert r.jobid == "1234567"
     assert r.partition == "cpufast"
-    assert r.name == "vscode"
+    assert r.name == "dev"
     assert r.state == "RUNNING"
+    assert r.cpus == "2"
+    assert r.mem == "4G"
+    assert r.gres == "N/A"
+    assert r.gpu_count == "—"
     assert r.node == "n01"
 
 
+def test_jobrow_from_gpu_line_parses_gpus() -> None:
+    line = "  1234568   gpufast    dev-gpu  RUNNING    00:10  04:00:00     8   32G   gpu:1 g05"
+    r = JobRow.from_squeue_line(line)
+    assert r is not None
+    assert r.name == "dev-gpu"
+    assert r.cpus == "8"
+    assert r.mem == "32G"
+    assert r.gres == "gpu:1"
+    assert r.gpu_count == "1"
+    assert r.node == "g05"
+
+
 def test_jobrow_from_pending_line_keeps_reason() -> None:
-    line = "   1234568   cpufast    vscode    PENDING   0:00   04:00:00   1 (Resources)"
+    line = "  1234569   cpufast        dev  PENDING    0:00   04:00:00     2    4G     N/A (Resources)"
     r = JobRow.from_squeue_line(line)
     assert r is not None
     assert r.state == "PENDING"
@@ -67,9 +83,9 @@ async def test_refresh_populates_table(monkeypatch) -> None:
         slurm,
         "list_jobs",
         lambda cfg: (
-            "JOBID PARTITION NAME STATE TIME LIMIT NODES NODE\n"
-            "1234567 cpufast vscode RUNNING 00:05 04:00:00 1 n01\n"
-            "1234568 gpufast vscode-gpu RUNNING 00:10 04:00:00 1 g05\n"
+            "JOBID PARTITION NAME STATE TIME LIMIT CPU MEM GRES NODE\n"
+            "1234567 cpufast dev RUNNING 00:05 01:00:00 2 4G N/A n01\n"
+            "1234568 gpufast dev-gpu RUNNING 00:10 04:00:00 8 32G gpu:1 g05\n"
         ),
     )
     monkeypatch.setattr(
@@ -85,7 +101,7 @@ async def test_refresh_populates_table(monkeypatch) -> None:
         panel = app.query_one(JobsPanel)
         assert len(panel._rows) == 2
         assert panel._rows[0].jobid == "1234567"
-        assert panel._rows[1].name == "vscode-gpu"
+        assert panel._rows[1].name == "dev-gpu"
 
 
 async def test_shell_action_opens_folder_modal(monkeypatch) -> None:

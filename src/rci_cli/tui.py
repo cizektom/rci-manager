@@ -233,14 +233,17 @@ class JobRow:
     state: str
     time: str
     limit: str
+    cpus: str
+    mem: str
+    gres: str  # raw squeue %b string — ``gpu:1``, ``N/A``, ``(null)``
     node: str
 
     @classmethod
     def from_squeue_line(cls, line: str) -> JobRow | None:
-        parts = line.split(None, 7)
+        parts = line.split(None, 9)
         if len(parts) < 4:
             return None
-        while len(parts) < 8:
+        while len(parts) < 10:
             parts.append("")
         return cls(
             jobid=parts[0],
@@ -249,8 +252,27 @@ class JobRow:
             state=parts[3],
             time=parts[4],
             limit=parts[5],
-            node=parts[7] or parts[6],  # %N is last in our format string
+            cpus=parts[6],
+            mem=parts[7],
+            gres=parts[8],
+            node=parts[9],
         )
+
+    @property
+    def gpu_count(self) -> str:
+        """Compact GPU column: ``1`` for ``gpu:1``, ``—`` for none."""
+        g = (self.gres or "").strip()
+        if not g or g in ("N/A", "(null)"):
+            return "—"
+        for part in g.split(","):
+            part = part.strip()
+            if part.startswith("gpu"):
+                # ``gpu:1`` or ``gpu:tesla:1`` — last segment is the count.
+                segs = part.split(":")
+                if len(segs) >= 2 and segs[-1].isdigit():
+                    return segs[-1]
+                return "?"
+        return "—"
 
 
 class JobsPanel(Container):
@@ -274,11 +296,23 @@ class JobsPanel(Container):
         with Vertical():
             yield Static("Loading…", id="alloc-status")
             yield DataTable(id="jobs-table", zebra_stripes=True, cursor_type="row")
+            yield Static("", id="job-detail")
             yield Static("", id="last-action")
 
     def on_mount(self) -> None:
         table = self.query_one("#jobs-table", DataTable)
-        table.add_columns("JobID", "Partition", "Name", "State", "Time", "Limit", "Node / Reason")
+        table.add_columns(
+            "JobID",
+            "Partition",
+            "Name",
+            "State",
+            "Time",
+            "Limit",
+            "CPU",
+            "Mem",
+            "GPU",
+            "Node / Reason",
+        )
         table.focus()
         self.refresh_jobs()
         self.set_interval(REFRESH_INTERVAL, self.refresh_jobs)
@@ -306,7 +340,21 @@ class JobsPanel(Container):
         table = self.query_one("#jobs-table", DataTable)
         table.clear()
         for r in rows:
-            table.add_row(r.jobid, r.partition, r.name, r.state, r.time, r.limit, r.node, key=r.jobid)
+            table.add_row(
+                r.jobid,
+                r.partition,
+                r.name,
+                r.state,
+                r.time,
+                r.limit,
+                r.cpus or "—",
+                r.mem or "—",
+                r.gpu_count,
+                r.node,
+                key=r.jobid,
+            )
+        # Update the detail line for the (re-)selected row, if any.
+        self._refresh_detail()
         self._rows = rows
         if rows:
             target = next((i for i, r in enumerate(rows) if r.jobid == prior), 0)
@@ -340,6 +388,25 @@ class JobsPanel(Container):
     def _selected_jobid(self) -> str | None:
         r = self._selected_row()
         return r.jobid if r else None
+
+    def _refresh_detail(self) -> None:
+        row = self._selected_row()
+        widget = self.query_one("#job-detail", Static)
+        if row is None:
+            widget.update("")
+            return
+        gpu_seg = f" · [b]{row.gpu_count}[/] GPU" if row.gpu_count not in ("—", "0") else ""
+        widget.update(
+            f"[b]{row.jobid}[/]  {row.name}  [dim]·[/dim]  "
+            f"[b]{row.state}[/]  [dim]on[/]  {row.partition}  [dim]·[/dim]  "
+            f"[b]{row.cpus}[/] CPU · [b]{row.mem}[/]{gpu_seg}  [dim]·[/dim]  "
+            f"used [b]{row.time}[/] / limit [b]{row.limit}[/]  [dim]·[/dim]  "
+            f"node [b]{row.node or '—'}[/]"
+        )
+
+    @on(DataTable.RowHighlighted, "#jobs-table")
+    def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._refresh_detail()
 
     def _notify_action(self, msg: str) -> None:
         self._last_action = msg
@@ -553,6 +620,14 @@ Tab.-active { color: ansi_cyan; text-style: bold; }
     height: 1;
     color: ansi_default;
     background: ansi_default;
+}
+
+#job-detail {
+    padding: 0 1;
+    height: 1;
+    color: ansi_default;
+    background: ansi_default;
+    border-top: dashed ansi_bright_black;
 }
 
 #last-action {
