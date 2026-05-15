@@ -6,7 +6,6 @@ Everything goes through the local ``ssh`` binary using the user's ``~/.ssh/confi
 
 from __future__ import annotations
 
-import shlex
 import subprocess
 from collections.abc import Sequence
 
@@ -73,8 +72,3 @@ def port_forward(host: str, local_port: int, remote_port: int) -> int:
 def run_local(argv: Sequence[str], *, check: bool = True) -> int:
     """Run a local command, inheriting the TTY. Used for the WSL ``cmd.exe`` path."""
     return subprocess.run(list(argv), check=check).returncode
-
-
-def quote_remote(cmd: str) -> str:
-    """Quote a string so it survives one layer of shell expansion on the remote side."""
-    return shlex.quote(cmd)

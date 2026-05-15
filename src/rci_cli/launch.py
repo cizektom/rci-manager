@@ -4,8 +4,8 @@ Compute nodes (``n*``/``g*``) don't have zsh installed and their bash doesn't
 replicate the login-node setup, so we manually source the sam2rl venv and
 prepend ``$HOME/bin:$HOME/.local/bin`` to PATH inside each ssh invocation.
 
-No persistence layer for now — ssh disconnect ends the session. Re-introduce
-tmux wrapping later once the rest of the UX is settled.
+No persistence layer at this level — ssh disconnect ends the session. Wrap
+inside the spawned bash with ``tmux`` / ``screen`` if you need survival.
 """
 
 from __future__ import annotations

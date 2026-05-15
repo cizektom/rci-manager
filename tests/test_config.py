@@ -56,3 +56,39 @@ def test_load_ignores_unknown_keys(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config_mod, "_config_path", lambda: cfg_path)
     loaded = load()
     assert loaded.user == "foo"
+
+
+def test_partition_catalog_defaults_match_rci() -> None:
+    """Defaults model the RCI cluster's partition matrix — code reading them
+    expects this exact shape until config.toml overrides it."""
+    c = Config()
+    assert c.partition_types == ("cpu", "gpu", "amdgpu", "h200")
+    assert c.partition_classes == (
+        ("fast", "fast"),
+        ("(normal)", ""),
+        ("long", "long"),
+        ("extralong", "extralong"),
+    )
+    assert c.gpu_partition_types == ("gpu", "amdgpu", "h200")
+
+
+def test_load_overrides_partition_catalog_for_other_cluster(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A different Slurm site can replace the whole partition matrix from
+    config.toml — including the nested array-of-arrays for partition_classes
+    (recursive list→tuple coercion handles it)."""
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        'partition_types = ["compute", "gpu-a100"]\n'
+        'partition_classes = [["short", "short"], ["(normal)", ""]]\n'
+        'gpu_partition_types = ["gpu-a100"]\n'
+    )
+    monkeypatch.setattr(config_mod, "_config_path", lambda: cfg_path)
+    loaded = load()
+    assert loaded.partition_types == ("compute", "gpu-a100")
+    assert loaded.partition_classes == (
+        ("short", "short"),
+        ("(normal)", ""),
+    )
+    assert loaded.gpu_partition_types == ("gpu-a100",)

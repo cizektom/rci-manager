@@ -46,8 +46,3 @@ def test_run_stdin_pipes_input(captured) -> None:
 def test_port_forward_argv(captured) -> None:
     ssh.port_forward("g05", 8080, 9000)
     assert captured["runs"][0]["argv"] == ["ssh", "-N", "-L", "8080:localhost:9000", "g05"]
-
-
-def test_quote_remote_handles_spaces() -> None:
-    assert ssh.quote_remote("hello world") == "'hello world'"
-    assert ssh.quote_remote("simple") == "simple"

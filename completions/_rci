@@ -18,9 +18,10 @@ _rci() {
         command)
             local -a allocation jobs_actions interactive utility
             allocation=(
-                'cpu:Submit a CPU vscode allocation (cpufast)'
-                'gpu:Submit a GPU vscode-gpu allocation (gpufast)'
+                'cpu:Submit a CPU dev allocation (cpufast)'
+                'gpu:Submit a GPU dev-gpu allocation (gpufast)'
                 'alloc:Print <node> <jobid> of current allocation'
+                'port:Forward a local port to the compute node'
             )
             jobs_actions=(
                 'jobs:List your Slurm jobs (squeue)'
@@ -67,6 +68,9 @@ _rci() {
                     ;;
                 cancel)
                     _arguments '1:job id: '
+                    ;;
+                port)
+                    _arguments '1:port spec (8888 or 8888:9000): '
                     ;;
                 cancel-all|cancel-dev|jobs|ssh|tui|version)
                     # no further args
