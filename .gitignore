@@ -29,3 +29,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code worktrees / scratch
+.claude/
