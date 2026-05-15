@@ -365,6 +365,36 @@ async def test_new_instance_modal_q_cancels(monkeypatch, tmp_path) -> None:
     assert quit_calls == [], "q on the modal must NOT trigger app.action_quit"
 
 
+async def test_new_instance_modal_rejects_short_walltime_from_state(monkeypatch, tmp_path) -> None:
+    """Regression: state.json from an older session may contain a free-form
+    walltime like ``"0:00:10"``. Slurm parses that as 10 seconds and rounds up
+    to the 1-minute minimum, silently shrinking the user's job. The modal must
+    discard such non-preset values and fall back to the config default."""
+    from textual.widgets import Select
+
+    from rci_cli import state
+    from rci_cli.config import Config
+    from rci_cli.tui import NewInstanceModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    state.set_last_instance_params(
+        partition_type="cpu",
+        partition_class="fast",
+        cores=2,
+        gpus=0,
+        mem_gb=4,
+        walltime="0:00:10",  # bogus — 10 seconds, was reachable via old Input
+    )
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), lambda _p: None)
+        await pilot.pause()
+        # Falls back to the Config default cpu_defaults[-1] = "1:00:00".
+        assert app.screen.query_one("#time", Select).value == "1:00:00"
+
+
 async def test_new_instance_modal_q_dismisses_from_walltime(monkeypatch, tmp_path) -> None:
     """The walltime field is a Select (not an Input), so pressing ``q`` while
     it's focused must fall through to the modal's cancel binding rather than
@@ -583,7 +613,9 @@ async def test_new_instance_modal_prefills_last_params(monkeypatch, tmp_path) ->
         cores=8,
         gpus=2,
         mem_gb=32,
-        walltime="6:00:00",
+        # Must be a value in WALLTIME_PRESETS — non-preset walltimes are
+        # discarded on load (see test_new_instance_modal_rejects_short_walltime_from_state).
+        walltime="8:00:00",
     )
 
     app = RciApp()
@@ -599,10 +631,8 @@ async def test_new_instance_modal_prefills_last_params(monkeypatch, tmp_path) ->
         assert scr.query_one("#gpus", Input).value == "2"
         assert scr.query_one("#mem", Input).value == "32"
         # #time is a Select (not an Input) so printable keys like ``q`` fall
-        # through to the modal cancel binding. Non-preset values from saved
-        # state are dynamically added to the options list, so "6:00:00" still
-        # round-trips even though it isn't in WALLTIME_PRESETS.
-        assert scr.query_one("#time", Select).value == "6:00:00"
+        # through to the modal cancel binding.
+        assert scr.query_one("#time", Select).value == "8:00:00"
 
 
 async def test_new_instance_modal_submit_persists_params(monkeypatch, tmp_path) -> None:
@@ -737,3 +767,34 @@ async def test_refresh_handles_squeue_failure_gracefully(monkeypatch) -> None:
             await pilot.pause(0.05)
         # App should still be running — error went to a notification, not a crash.
         assert app.is_running
+
+
+async def test_confirm_modal_dangerous_focuses_no(monkeypatch) -> None:
+    """Safe default for dangerous=True confirms is the ``No`` button —
+    Enter must abort, not destroy."""
+    from textual.widgets import Button
+
+    from rci_cli.tui import ConfirmModal
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(ConfirmModal("Really cancel?", dangerous=True), lambda _b: None)
+        await pilot.pause()
+        scr = app.screen
+        assert app.focused is scr.query_one("#no", Button)
+
+
+async def test_confirm_modal_neutral_focuses_yes(monkeypatch) -> None:
+    """Non-dangerous confirms focus ``Yes`` (Enter accepts is the common case)."""
+    from textual.widgets import Button
+
+    from rci_cli.tui import ConfirmModal
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(ConfirmModal("Proceed?"), lambda _b: None)
+        await pilot.pause()
+        scr = app.screen
+        assert app.focused is scr.query_one("#yes", Button)

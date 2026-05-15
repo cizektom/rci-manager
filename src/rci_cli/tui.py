@@ -45,13 +45,22 @@ RUNNING_STATES = frozenset({"R", "RUNNING"})
 
 
 class ConfirmModal(ModalScreen[bool]):
-    """Generic yes/no confirmation. Returns True/False via ``dismiss``."""
+    """Generic yes/no confirmation. Returns True/False via ``dismiss``.
+
+    Initial focus picks the *safe* button: ``No`` for ``dangerous=True``
+    confirms so Enter aborts the destructive action by default. Non-dangerous
+    confirms focus ``Yes`` since pressing Enter to accept is the common case.
+    Tab toggles between the two; ``y``/``n``/``q``/Esc work from anywhere.
+    """
+
+    # Disable Textual's "auto-focus first focusable" — we pick the safe
+    # default ourselves in :meth:`on_mount`.
+    AUTO_FOCUS: ClassVar[str] = ""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "yes", "Yes", show=False),
         Binding("n,q", "no", "No", show=False),
         Binding("escape", "no", "Cancel", show=False),
-        Binding("enter", "yes", "Confirm", show=False),
     ]
 
     def __init__(self, prompt: str, *, dangerous: bool = False) -> None:
@@ -60,18 +69,24 @@ class ConfirmModal(ModalScreen[bool]):
         self.dangerous = dangerous
 
     def compose(self) -> ComposeResult:
+        # Plain Container is non-focusable by default, so the first Tab walks
+        # straight between the Yes/No buttons without an intermediate stop.
         with Container(id="modal-box"):
             yield Label(self.prompt, id="modal-prompt")
             with Horizontal(id="modal-buttons"):
                 # Keep ``-error`` (red) for dangerous confirms — that's a
-                # safety affordance, not just a "primary action" hint. Plain
-                # confirms use the default variant so the highlight follows
-                # focus rather than locking onto Yes.
+                # safety affordance, not just a "primary action" hint.
                 if self.dangerous:
                     yield Button("Yes", variant="error", id="yes")
                 else:
                     yield Button("Yes", id="yes")
                 yield Button("No", id="no")
+
+    def on_mount(self) -> None:
+        # Safe default: for dangerous confirms (e.g. "cancel job?") Enter
+        # should abort. For neutral confirms, Enter accepts.
+        target = "#no" if self.dangerous else "#yes"
+        self.query_one(target, Button).focus()
 
     @on(Button.Pressed, "#yes")
     def _yes(self) -> None:
