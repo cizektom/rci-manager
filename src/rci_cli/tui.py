@@ -5,10 +5,6 @@ compute node, launch claude or VS Code on the allocation, submit fresh CPU /
 GPU allocations from a modal. Refresh is threaded so the UI never freezes
 while ``squeue`` is in flight; ``App.suspend()`` is used to hand the terminal
 over to ssh for shell-in / claude attach, then re-render on return.
-
-The screen is wrapped in ``TabbedContent`` so additional tabs (an "Agents"
-panel for managing claude agents on the cluster — coming later) can plug in
-without restructuring the app.
 """
 
 from __future__ import annotations
@@ -19,7 +15,7 @@ from typing import ClassVar
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -30,13 +26,12 @@ from textual.widgets import (
     Label,
     Select,
     Static,
-    TabbedContent,
-    TabPane,
 )
 
 from . import alloc as alloc_mod
-from . import launch, slurm
+from . import launch, sessions, slurm
 from .config import Config, load
+from .sessions import SessionCounts
 
 REFRESH_INTERVAL = 5.0
 ACTION_FADE_SECONDS = 6.0  # how long the inline action log lingers before auto-clearing
@@ -149,7 +144,9 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
 
     def compose(self) -> ComposeResult:
         cpu_cores, cpu_mem, cpu_time = self.cfg.cpu_defaults
-        with Container(id="modal-box"):
+        # VerticalScroll so the modal stays usable on shorter terminals — the
+        # form scrolls within the box once it grows past the viewport's height.
+        with VerticalScroll(id="modal-box"):
             yield Label("[b]New instance[/b]", id="modal-title")
             yield Label("Partition  [dim]<type><class>[/dim]")
             with Horizontal(id="partition-row"):
@@ -167,7 +164,7 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
                 )
             yield Label("Cores")
             yield Input(value=str(cpu_cores), id="cores", type="integer")
-            yield Label("GPUs  [dim](0 = CPU job)[/dim]")
+            yield Label("GPUs  [dim](0 = CPU job)[/dim]", id="gpus-label")
             yield Input(value="0", id="gpus", type="integer")
             yield Label("Memory (GB)")
             yield Input(value=str(cpu_mem), id="mem", type="integer")
@@ -176,6 +173,27 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
             with Horizontal(id="modal-buttons"):
                 yield Button("Submit", variant="primary", id="ok")
                 yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        # Default type is CPU → hide the GPUs row until the user picks gpu / amdgpu / h200.
+        self._apply_gpu_visibility("cpu")
+
+    def _apply_gpu_visibility(self, ptype: str) -> None:
+        is_gpu_type = ptype != "cpu"
+        self.query_one("#gpus-label", Label).display = is_gpu_type
+        self.query_one("#gpus", Input).display = is_gpu_type
+
+    @on(Select.Changed, "#partition-type")
+    def _type_changed(self, event: Select.Changed) -> None:
+        ptype = str(event.value)
+        self._apply_gpu_visibility(ptype)
+        # Quality-of-life: switching to a GPU type prefills GPUs=1 (if still 0);
+        # switching back to CPU resets it to 0 so the validation always passes.
+        gpus_input = self.query_one("#gpus", Input)
+        if ptype == "cpu":
+            gpus_input.value = "0"
+        elif gpus_input.value in ("", "0"):
+            gpus_input.value = "1"
 
     @on(Button.Pressed, "#ok")
     @on(Input.Submitted)
@@ -297,6 +315,22 @@ class JobRow:
         return "—"
 
 
+def _sessions_cell(sess: dict[str, SessionCounts | None], jobid: str) -> str:
+    """Render the Sessions column for one row.
+
+    Three states:
+      - jobid not in dict → not probed (pending or no node yet) → blank
+      - dict value is None → probed but ssh/parse failed → ``?``
+      - dict value is SessionCounts → compact summary (``—``, ``1s``, ``1s 1e``)
+    """
+    if jobid not in sess:
+        return ""
+    sc = sess[jobid]
+    if sc is None:
+        return "?"
+    return sc.short()
+
+
 class JobsPanel(Container):
     """Live jobs dashboard with action keys."""
 
@@ -311,6 +345,10 @@ class JobsPanel(Container):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._rows: list[JobRow] = []
+        # Per-jobid session counts from sessions.count_for_jobs. ``None`` means
+        # "probe failed" (rendered as ``?``); missing key means "not probed yet"
+        # (rendered blank). Refreshed alongside the squeue tick.
+        self._sessions: dict[str, SessionCounts | None] = {}
         self._last_action: str = ""
         self._action_clear_timer = None  # type: ignore[var-annotated]
 
@@ -334,6 +372,7 @@ class JobsPanel(Container):
             "Mem",
             "GPU",
             "Node / Reason",
+            "Sessions",
         )
         table.focus()
         self.refresh_jobs()
@@ -355,9 +394,25 @@ class JobsPanel(Container):
             row = JobRow.from_squeue_line(line)
             if row is not None:
                 rows.append(row)
-        self.app.call_from_thread(self._apply_rows, rows, alloc)
+        # Probe sessions only for running jobs that have a node assigned —
+        # pending/completing rows can't have ssh-adopted PIDs. Calls run in
+        # parallel across nodes; the call is bounded by sessions.SESSION_PROBE_TIMEOUT.
+        pairs = [
+            (r.node, r.jobid)
+            for r in rows
+            if r.state in RUNNING_STATES and r.node and not r.node.startswith("(")
+        ]
+        sess: dict[str, SessionCounts | None] = (
+            sessions.count_for_jobs(pairs) if pairs else {}
+        )
+        self.app.call_from_thread(self._apply_rows, rows, alloc, sess)
 
-    def _apply_rows(self, rows: list[JobRow], alloc: alloc_mod.Allocation | None) -> None:
+    def _apply_rows(
+        self,
+        rows: list[JobRow],
+        alloc: alloc_mod.Allocation | None,
+        sess: dict[str, SessionCounts | None],
+    ) -> None:
         prior = self._selected_jobid()
         table = self.query_one("#jobs-table", DataTable)
         table.clear()
@@ -373,9 +428,11 @@ class JobsPanel(Container):
                 r.mem or "—",
                 r.gpu_count,
                 r.node,
+                _sessions_cell(sess, r.jobid),
                 key=r.jobid,
             )
         # Update the detail line for the (re-)selected row, if any.
+        self._sessions = sess
         self._refresh_detail()
         self._rows = rows
         if rows:
@@ -467,6 +524,9 @@ class JobsPanel(Container):
             self.app.notify("Nothing selected.", severity="warning")
             return
         prompt = f"Cancel job [b]{row.jobid}[/] ([i]{row.name}[/], {row.state}) on {row.partition}?"
+        sc = self._sessions.get(row.jobid)
+        if sc is not None and not sc.is_empty:
+            prompt += f"\n[yellow]⚠ {sc.describe()} will be killed.[/yellow]"
         self.app.push_screen(
             ConfirmModal(prompt, dangerous=True),
             lambda ok: self._do_cancel(row.jobid) if ok else None,
@@ -632,11 +692,6 @@ Footer {
 }
 FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
 
-TabbedContent { height: 1fr; }
-Tabs Underline { color: ansi_cyan; }
-Tab { color: ansi_default; }
-Tab.-active { color: ansi_cyan; text-style: bold; }
-
 #alloc-status {
     padding: 0 1;
     height: 1;
@@ -683,8 +738,13 @@ Tab.-active { color: ansi_cyan; text-style: bold; }
 }
 #jobs-table > .datatable--hover { background: ansi_default; }
 
-/* Modals: bordered dialog, centered in the TUI viewport. */
-ConfirmModal, NewInstanceModal, FolderModal { align: center middle; }
+/* Modals: bordered dialog, centered, with a dim translucent backdrop so the
+   dashboard stays visible behind the popup. ``background: black 50%`` blends
+   the screen with the underlying TUI for a darken-overlay effect. */
+ConfirmModal, NewInstanceModal, FolderModal {
+    align: center middle;
+    background: black 50%;
+}
 
 #partition-row { height: auto; padding-bottom: 1; }
 #partition-row Select { width: 1fr; margin-right: 1; }
@@ -697,7 +757,12 @@ ConfirmModal, NewInstanceModal, FolderModal { align: center middle; }
     padding: 1 2;
     width: 60;
     height: auto;
-    max-height: 30;
+    /* Cap at 90% of the viewport so the box stays on screen on short
+       terminals. VerticalScroll lets the form scroll within. */
+    max-height: 90%;
+    scrollbar-color: ansi_cyan;
+    scrollbar-color-hover: ansi_bright_cyan;
+    scrollbar-color-active: ansi_bright_cyan;
 }
 
 
@@ -752,11 +817,10 @@ Toast {
 
 
 class RciApp(App):
-    """Top-level Textual app. Single 'Jobs' tab for now; extension point for future tabs."""
+    """Top-level Textual app — live Slurm jobs dashboard."""
 
     CSS = CSS
-    TITLE = "rci"
-    SUB_TITLE = "RCI CVUT Slurm cluster"
+    TITLE = "RCI Cluster Manager"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "quit", "Quit"),
@@ -780,8 +844,5 @@ class RciApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with TabbedContent(initial="tab-jobs"):
-            with TabPane("Jobs", id="tab-jobs"):
-                yield JobsPanel(id="jobs-panel")
-            # Future: TabPane("Agents", id="tab-agents") for claude-agent management.
+        yield JobsPanel(id="jobs-panel")
         yield Footer()
