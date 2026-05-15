@@ -17,10 +17,23 @@ from . import ssh as ssh_mod
 from .config import Config, load
 
 app = typer.Typer(
-    no_args_is_help=True,
-    help="CLI + TUI for the RCI CVUT Slurm cluster.",
+    no_args_is_help=False,
+    help="CLI + TUI for the RCI CVUT Slurm cluster. Bare `rci` opens the TUI.",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+
+@app.callback(invoke_without_command=True)
+def _default(ctx: typer.Context) -> None:
+    """Bare ``rci`` (no subcommand) launches the TUI. Pipe to fall back to help."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        typer.echo(ctx.get_help())
+        return
+    from .tui import RciApp
+
+    RciApp().run()
 
 
 def _cfg() -> Config:
