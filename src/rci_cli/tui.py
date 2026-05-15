@@ -435,29 +435,75 @@ class JobsPanel(Container):
 
 
 CSS = """
-Screen { layout: vertical; }
+/* Inherit the terminal's own palette so the TUI lives in the same
+   color world as the user's P10k prompt and lazygit. Theme is set to
+   ``ansi-dark`` on the app; widget styling here uses ANSI color names
+   (or theme-aware tokens) so it adapts to whatever terminal scheme. */
+
+Screen { background: ansi_default; color: ansi_default; }
+
+Header {
+    background: ansi_default;
+    color: ansi_bright_white;
+}
+Header > HeaderTitle { text-style: bold; }
+
+Footer {
+    background: ansi_default;
+    color: ansi_default;
+}
+FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
 
 TabbedContent { height: 1fr; }
+Tabs Underline { color: ansi_cyan; }
+Tab { color: ansi_default; }
+Tab.-active { color: ansi_cyan; text-style: bold; }
 
 #alloc-status {
     padding: 0 1;
-    background: $panel;
-    color: $text;
-    border-bottom: tall $primary 30%;
+    height: 1;
+    color: ansi_default;
+    background: ansi_default;
 }
 
 #last-action {
     padding: 0 1;
-    color: $text-muted;
     height: 1;
+    color: ansi_bright_black;
+    background: ansi_default;
 }
 
-DataTable { height: 1fr; }
+#jobs-table {
+    height: 1fr;
+    background: ansi_default;
+    color: ansi_default;
+    border: round ansi_cyan;
+    border-title-color: ansi_cyan;
+    border-title-style: bold;
+    padding: 0;
+    scrollbar-color: ansi_cyan;
+    scrollbar-color-hover: ansi_bright_cyan;
+    scrollbar-color-active: ansi_bright_cyan;
+}
+#jobs-table > .datatable--header {
+    color: ansi_yellow;
+    text-style: bold;
+    background: ansi_default;
+}
+#jobs-table > .datatable--cursor {
+    background: ansi_blue;
+    color: ansi_bright_white;
+    text-style: bold;
+}
+#jobs-table > .datatable--hover { background: ansi_default; }
+
+/* Modals: bordered dialog, lazygit-style centered popup. */
+ConfirmModal, SubmitCpuModal, SubmitGpuModal { align: center middle; }
 
 #modal-box {
-    align: center middle;
-    background: $panel;
-    border: thick $primary;
+    background: ansi_default;
+    color: ansi_default;
+    border: round ansi_cyan;
     padding: 1 2;
     width: 60;
     height: auto;
@@ -466,20 +512,50 @@ DataTable { height: 1fr; }
 
 #modal-title, #modal-prompt {
     padding-bottom: 1;
-    color: $text;
+    color: ansi_bright_white;
+    text-style: bold;
 }
+
+Input {
+    background: ansi_default;
+    color: ansi_default;
+    border: round ansi_bright_black;
+    margin-bottom: 1;
+}
+Input:focus { border: round ansi_cyan; }
 
 #modal-buttons {
     height: auto;
     padding-top: 1;
     align-horizontal: right;
 }
+#modal-buttons Button { margin-left: 1; min-width: 12; }
 
-#modal-buttons Button { margin-left: 1; }
+Button {
+    background: ansi_default;
+    color: ansi_default;
+    border: round ansi_bright_black;
+}
+Button:hover, Button:focus { border: round ansi_cyan; color: ansi_cyan; }
+Button.-primary {
+    background: ansi_blue;
+    color: ansi_bright_white;
+    border: round ansi_blue;
+}
+Button.-primary:hover, Button.-primary:focus { border: round ansi_bright_blue; }
+Button.-error {
+    background: ansi_red;
+    color: ansi_bright_white;
+    border: round ansi_red;
+}
+Button.-error:hover, Button.-error:focus { border: round ansi_bright_red; }
 
-ConfirmModal, SubmitCpuModal, SubmitGpuModal {
-    align: center middle;
-    background: rgba(0,0,0,0.5);
+Label { color: ansi_default; }
+
+Toast {
+    background: ansi_default;
+    color: ansi_default;
+    border: round ansi_cyan;
 }
 """
 
@@ -493,7 +569,23 @@ class RciApp(App):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "quit", "Quit"),
+        Binding("t", "toggle_theme", "Theme", show=False),
     ]
+
+    def on_mount(self) -> None:
+        # Use the terminal's own palette so the TUI sits in the same color
+        # world as the user's shell prompt and lazygit. ``t`` cycles to dark.
+        self.theme = "ansi-dark"
+
+    def action_toggle_theme(self) -> None:
+        # Quick escape hatch if the ansi palette looks bad on a given terminal.
+        order = ["ansi-dark", "gruvbox", "nord", "monokai", "textual-dark"]
+        try:
+            idx = order.index(self.theme)
+        except ValueError:
+            idx = -1
+        self.theme = order[(idx + 1) % len(order)]
+        self.notify(f"theme: {self.theme}", timeout=2)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
