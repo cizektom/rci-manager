@@ -1,0 +1,45 @@
+"""Thin ssh wrappers used by the rest of the package.
+
+Everything goes through the local ``ssh`` binary using the user's ``~/.ssh/config``
+(which must define ``Host rci`` and ``Host n* g*`` — see the rci-cli README).
+"""
+
+from __future__ import annotations
+
+import shlex
+import subprocess
+from collections.abc import Sequence
+
+
+def capture(host: str, remote_cmd: str, *, check: bool = True) -> str:
+    """Run ``remote_cmd`` on ``host`` over ssh and return its stdout (stripped)."""
+    proc = subprocess.run(
+        ["ssh", host, remote_cmd],
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout.strip()
+
+
+def run(host: str, remote_cmd: str, *, tty: bool = False, check: bool = True) -> int:
+    """Run ``remote_cmd`` on ``host`` over ssh, inheriting the current TTY.
+
+    With ``tty=True`` we pass ``-tt`` so an interactive program (claude, bash, …)
+    sees a real PTY even when the connection traverses ``ProxyJump``.
+    """
+    argv = ["ssh"]
+    if tty:
+        argv.append("-tt")
+    argv.extend([host, remote_cmd])
+    return subprocess.run(argv, check=check).returncode
+
+
+def run_local(argv: Sequence[str], *, check: bool = True) -> int:
+    """Run a local command, inheriting the TTY. Used for the WSL ``cmd.exe`` path."""
+    return subprocess.run(list(argv), check=check).returncode
+
+
+def quote_remote(cmd: str) -> str:
+    """Quote a string so it survives one layer of shell expansion on the remote side."""
+    return shlex.quote(cmd)

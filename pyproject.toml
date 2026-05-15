@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rci-cli"
+version = "0.1.0"
+description = "CLI + TUI for the RCI CVUT Slurm cluster — allocations, jobs, remote launches."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Tomas Cizek", email = "cizek@kam.mff.cuni.cz" }]
+license = { text = "MIT" }
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "textual>=0.79",
+]
+
+[project.scripts]
+rci = "rci_cli.cli:app"
+
+[project.urls]
+Repository = "https://github.com/cizektom/rci-cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rci_cli"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
