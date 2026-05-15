@@ -30,6 +30,21 @@ def _first_running(cfg: Config, name: str) -> str | None:
     return ids[0] if ids else None
 
 
+def find_strongest(cfg: Config) -> Allocation | None:
+    """Return the strongest running allocation (GPU > CPU), or ``None`` if none exists.
+
+    Read-only counterpart to :func:`select_or_submit` — never submits. Used by
+    commands that operate on an *existing* allocation (sessions list/kill, …).
+    """
+    jobid = _first_running(cfg, cfg.gpu_job_name) or _first_running(cfg, cfg.cpu_job_name)
+    if jobid is None:
+        return None
+    node = slurm.node_for(cfg, jobid)
+    if not node:
+        return None
+    return Allocation(node=node, jobid=jobid)
+
+
 def select_or_submit(cfg: Config, *, require_gpu: bool = False) -> Allocation:
     """Return the allocation to use, submitting one if necessary.
 

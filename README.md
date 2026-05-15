@@ -31,25 +31,41 @@ shadow this binary).
 
 | command                  | replaces zsh helper       | notes                                              |
 | ------------------------ | ------------------------- | -------------------------------------------------- |
-| `rci ssh`            | `rci` (zsh alias for `ssh rci`) | interactive shell on the login host          |
-| `rci jobs`               | `rci-list`                | `squeue -u $USER` with the friendly format         |
-| `rci cpu`                | `rci-cpu`                 | `--cores N --mem GB --time HH:MM:SS`               |
-| `rci gpu`                | `rci-gpu`                 | `--gpus N --cores N --mem GB --time HH:MM:SS`      |
-| `rci cancel JOBID`       | `rci-cancel`              |                                                    |
-| `rci cancel-all`         | `rci-cancel-all`          | confirms first                                     |
-| `rci cancel-vscode`      | `rci-cancel-vscode`       | confirms first                                     |
-| `rci claude [DIR] [--gpu]` | `rci-claude` / `-gpu`   | folder rules below                                 |
-| `rci code [DIR] [--gpu]`   | `rci-code` / `-gpu`     | WSL → Windows `code.cmd` via `cmd.exe`             |
-| `rci shell [DIR] [--gpu]`  | *(new)*                 | interactive bash on the compute node               |
-| `rci alloc [--gpu]`        | `_rci_alloc`            | prints `<node> <jobid>` — scripting-friendly       |
-| `rci tui`                  | *(new)*                 | Textual TUI — live jobs dashboard (skeleton)       |
-| `rci version`              | -                       |                                                    |
+| `rci ssh`                          | `rci` (zsh alias `ssh rci`) | interactive shell on the login host        |
+| `rci jobs`                         | `rci-list`               | `squeue -u $USER` with the friendly format    |
+| `rci cpu`                          | `rci-cpu`                | `--cores N --mem GB --time HH:MM:SS`          |
+| `rci gpu`                          | `rci-gpu`                | `--gpus N --cores N --mem GB --time HH:MM:SS` |
+| `rci cancel JOBID`                 | `rci-cancel`             |                                               |
+| `rci cancel-all`                   | `rci-cancel-all`         | confirms first                                |
+| `rci cancel-vscode`                | `rci-cancel-vscode`      | confirms first                                |
+| `rci claude [DIR] [SUFFIX] [--gpu]` | `rci-claude` / `-gpu`   | persistent zellij session, claude auto-starts |
+| `rci shell [DIR] [SUFFIX] [--gpu]`  | `rci-shell` / `-gpu`    | persistent zellij session, plain bash         |
+| `rci code [DIR] [--gpu]`           | `rci-code` / `-gpu`      | WSL → Windows `code.cmd` via `cmd.exe`        |
+| `rci alloc [--gpu]`                | `_rci_alloc`             | prints `<node> <jobid>` — scripting-friendly  |
+| `rci install-zellij`               | `rci-install-zellij`     | drop static zellij + claude layout into `~/bin` |
+| `rci sessions`                     | `rci-sessions`           | list zellij sessions on existing allocation   |
+| `rci kill-session NAME` / `--all`  | `rci-kill-session`       | kill zellij session(s) without attaching      |
+| `rci port LOCAL[:REMOTE]`          | `rci-port`               | local → compute-node port forward (Ctrl-C)    |
+| `rci tui`                          | *(new)*                  | Textual TUI — live jobs dashboard (skeleton)  |
+| `rci version`                      | -                        |                                               |
 
 **Folder argument rules** (applies to `claude`, `code`, `shell`):
 
 - omitted → `/home/cizekto2`
 - relative → resolved under `/home/cizekto2` (`rci claude sam2rl` → `/home/cizekto2/sam2rl`)
 - absolute → used as-is
+
+**Zellij sessions** (`claude` and `shell`): each launch is wrapped in a named
+zellij session — `<prefix>-<basename-of-folder>[-<suffix>]`:
+
+- `rci claude` → folder `~`, session `claude-home`
+- `rci claude sam2rl` → folder `~/sam2rl`, session `claude-sam2rl`
+- `rci claude sam2rl exp1` → folder `~/sam2rl`, session `claude-sam2rl-exp1` (parallel)
+
+ssh disconnects don't kill the session; re-running the same command attaches
+back to the running session. Run `rci install-zellij` once per cluster
+account to get the binary onto compute nodes (it's a static musl build that
+works without library hassles).
 
 ---
 

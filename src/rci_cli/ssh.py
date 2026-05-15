@@ -22,17 +22,39 @@ def capture(host: str, remote_cmd: str, *, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
-def run(host: str, remote_cmd: str, *, tty: bool = False, check: bool = True) -> int:
+def run(
+    host: str,
+    remote_cmd: str = "",
+    *,
+    tty: bool = False,
+    check: bool = True,
+    stdin: str | None = None,
+) -> int:
     """Run ``remote_cmd`` on ``host`` over ssh, inheriting the current TTY.
 
-    With ``tty=True`` we pass ``-tt`` so an interactive program (claude, bash, …)
-    sees a real PTY even when the connection traverses ``ProxyJump``.
+    ``tty=True`` passes ``-tt`` so an interactive program (claude, bash, …) sees
+    a real PTY even when the connection traverses ``ProxyJump``.
+
+    ``stdin`` pipes a string into the ssh process — used to send multi-line
+    bash scripts to ``ssh host bash`` for one-off remote installs.
     """
     argv = ["ssh"]
     if tty:
         argv.append("-tt")
-    argv.extend([host, remote_cmd])
+    argv.append(host)
+    if remote_cmd:
+        argv.append(remote_cmd)
+    if stdin is not None:
+        return subprocess.run(argv, check=check, input=stdin, text=True).returncode
     return subprocess.run(argv, check=check).returncode
+
+
+def port_forward(host: str, local_port: int, remote_port: int) -> int:
+    """Block forwarding ``localhost:local_port`` → ``host:remote_port`` until Ctrl-C."""
+    return subprocess.run(
+        ["ssh", "-N", "-L", f"{local_port}:localhost:{remote_port}", host],
+        check=False,
+    ).returncode
 
 
 def run_local(argv: Sequence[str], *, check: bool = True) -> int:
