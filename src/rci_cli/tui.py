@@ -29,9 +29,8 @@ from textual.widgets import (
 )
 
 from . import alloc as alloc_mod
-from . import launch, sessions, slurm, state
+from . import launch, slurm, state
 from .config import Config, load
-from .sessions import SessionCounts
 
 REFRESH_INTERVAL = 5.0
 ACTION_FADE_SECONDS = 6.0  # how long the inline action log lingers before auto-clearing
@@ -49,7 +48,7 @@ class ConfirmModal(ModalScreen[bool]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "yes", "Yes", show=False),
-        Binding("n", "no", "No", show=False),
+        Binding("n,q", "no", "No", show=False),
         Binding("escape", "no", "Cancel", show=False),
         Binding("enter", "yes", "Confirm", show=False),
     ]
@@ -135,7 +134,12 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("escape,q", "cancel", "Cancel", show=False),
+        # Enter falls through to the focused widget first: on a Select it
+        # opens/selects the dropdown, on an Input it fires Input.Submitted
+        # (handled below) and submits. No ``priority`` — that flag would
+        # hijack Enter from the Selects and block partition switching.
+        Binding("enter", "submit", "Submit", show=False),
     ]
 
     def __init__(self, cfg: Config) -> None:
@@ -148,7 +152,7 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
         # form scrolls within the box once it grows past the viewport's height.
         with VerticalScroll(id="modal-box"):
             yield Label("[b]New instance[/b]", id="modal-title")
-            yield Label("Partition  [dim]<type><class>[/dim]")
+            yield Label("Partition")
             with Horizontal(id="partition-row"):
                 yield Select(
                     [(t, t) for t in PARTITION_TYPES],
@@ -198,6 +202,9 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
     @on(Button.Pressed, "#ok")
     @on(Input.Submitted)
     def _ok(self) -> None:
+        self.action_submit()
+
+    def action_submit(self) -> None:
         try:
             ptype = str(self.query_one("#partition-type", Select).value)
             pclass = str(self.query_one("#partition-class", Select).value)
@@ -337,22 +344,6 @@ class JobRow:
         return "—"
 
 
-def _sessions_cell(sess: dict[str, SessionCounts | None], jobid: str) -> str:
-    """Render the Sessions column for one row.
-
-    Three states:
-      - jobid not in dict → not probed (pending or no node yet) → blank
-      - dict value is None → probed but ssh/parse failed → ``?``
-      - dict value is SessionCounts → compact summary (``—``, ``1s``, ``1s 1e``)
-    """
-    if jobid not in sess:
-        return ""
-    sc = sess[jobid]
-    if sc is None:
-        return "?"
-    return sc.short()
-
-
 class JobsPanel(Container):
     """Live jobs dashboard with action keys."""
 
@@ -367,10 +358,6 @@ class JobsPanel(Container):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._rows: list[JobRow] = []
-        # Per-jobid session counts from sessions.count_for_jobs. ``None`` means
-        # "probe failed" (rendered as ``?``); missing key means "not probed yet"
-        # (rendered blank). Refreshed alongside the squeue tick.
-        self._sessions: dict[str, SessionCounts | None] = {}
         self._last_action: str = ""
         self._action_clear_timer = None  # type: ignore[var-annotated]
 
@@ -394,7 +381,6 @@ class JobsPanel(Container):
             "Mem",
             "GPU",
             "Node",
-            "Sessions",
         )
         table.focus()
         self.refresh_jobs()
@@ -407,7 +393,6 @@ class JobsPanel(Container):
         cfg = load()
         try:
             raw = slurm.list_jobs(cfg)
-            alloc = alloc_mod.find_strongest(cfg)
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._notify_error, f"Refresh failed: {e}")
             return
@@ -416,25 +401,9 @@ class JobsPanel(Container):
             row = JobRow.from_squeue_line(line)
             if row is not None:
                 rows.append(row)
-        # Probe sessions only for running jobs that have a node assigned —
-        # pending/completing rows can't have ssh-adopted PIDs. Calls run in
-        # parallel across nodes; the call is bounded by sessions.SESSION_PROBE_TIMEOUT.
-        pairs = [
-            (r.node, r.jobid)
-            for r in rows
-            if r.state in RUNNING_STATES and r.node and not r.node.startswith("(")
-        ]
-        sess: dict[str, SessionCounts | None] = (
-            sessions.count_for_jobs(pairs) if pairs else {}
-        )
-        self.app.call_from_thread(self._apply_rows, rows, alloc, sess)
+        self.app.call_from_thread(self._apply_rows, rows)
 
-    def _apply_rows(
-        self,
-        rows: list[JobRow],
-        alloc: alloc_mod.Allocation | None,
-        sess: dict[str, SessionCounts | None],
-    ) -> None:
+    def _apply_rows(self, rows: list[JobRow]) -> None:
         prior = self._selected_jobid()
         table = self.query_one("#jobs-table", DataTable)
         table.clear()
@@ -450,11 +419,9 @@ class JobsPanel(Container):
                 r.mem or "—",
                 r.gpu_count,
                 r.node_display,
-                _sessions_cell(sess, r.jobid),
                 key=r.jobid,
             )
         # Update the detail line for the (re-)selected row, if any.
-        self._sessions = sess
         self._refresh_detail()
         self._rows = rows
         if rows:
@@ -463,15 +430,22 @@ class JobsPanel(Container):
                 table.move_cursor(row=target)
             except Exception:  # noqa: BLE001
                 pass
+        # Summarize the table at a glance — there's no single "current"
+        # allocation now that names are per-job; we just count states.
+        running = sum(1 for r in rows if r.state in RUNNING_STATES)
+        pending = len(rows) - running
         status = self.query_one("#alloc-status", Static)
-        if alloc:
+        if not rows:
             status.update(
-                f"[green b]●[/] allocation: [b]{alloc.node}[/]  job [b]{alloc.jobid}[/]"
+                "[yellow]○[/yellow] no jobs — press [b]n[/] to submit a new instance"
             )
         else:
-            status.update(
-                "[yellow]○[/yellow] no running allocation — press [b]n[/] to submit one"
-            )
+            parts: list[str] = []
+            if running:
+                parts.append(f"[green b]●[/] {running} running")
+            if pending:
+                parts.append(f"[yellow]○[/yellow] {pending} pending")
+            status.update("  [dim]·[/dim]  ".join(parts))
         # Clear the "refreshing…" indicator if a manual refresh just completed.
         # Other action messages stay until their own fade timer fires.
         if self._last_action == "refreshing…":
@@ -548,9 +522,6 @@ class JobsPanel(Container):
             self.app.notify("Nothing selected.", severity="warning")
             return
         prompt = f"Cancel job [b]{row.jobid}[/] ([i]{row.name}[/], {row.state}) on {row.partition}?"
-        sc = self._sessions.get(row.jobid)
-        if sc is not None and not sc.is_empty:
-            prompt += f"\n[yellow]⚠ {sc.describe()} will be killed.[/yellow]"
         self.app.push_screen(
             ConfirmModal(prompt, dangerous=True),
             lambda ok: self._do_cancel(row.jobid) if ok else None,
@@ -586,16 +557,14 @@ class JobsPanel(Container):
         if folder is None:
             return  # user cancelled the folder prompt
         cfg = load()
-        # Prefer the selected row when it's a usable running allocation — the
-        # user moved the cursor there for a reason. Only fall back to
-        # find_strongest (which scans for the named vscode jobs) when nothing
-        # usable is highlighted, and only spawn a fresh instance when neither
-        # path turns up a node.
-        alloc = self._alloc_from_selected_row() or alloc_mod.find_strongest(cfg)
+        # Use whichever job the cursor's on, if it's a running node. With
+        # per-allocation names there's no canonical "the" allocation to
+        # auto-pick — the user is expected to highlight the one they want.
+        alloc = self._alloc_from_selected_row()
         if alloc is not None:
             self._attach_to(kind, alloc, folder)
             return
-        # No allocation — collect alloc params, then submit + wait + attach to folder.
+        # No usable selection — collect alloc params, submit, attach.
         self.app.push_screen(
             NewInstanceModal(cfg),
             lambda params: (
@@ -657,24 +626,37 @@ class JobsPanel(Container):
             self.app.call_from_thread(self._notify_error, f"submit failed: {e}")
             return
         first_line = (out.strip().splitlines() or [""])[0]
+        # salloc prints ``Granted job allocation NNNNNN`` (or ``Pending …``).
+        # Extract the id so we poll the *specific* job we just submitted instead
+        # of grabbing whatever's the strongest among everything running.
+        import re
+        match = re.search(r"job allocation (\d+)", out)
+        if match is None:
+            self.app.call_from_thread(
+                self._notify_error, f"couldn't parse jobid from salloc output: {first_line}"
+            )
+            return
+        jobid = match.group(1)
         self.app.call_from_thread(
             self._notify_action, f"submitted ({first_line}); waiting for node…"
         )
         # Poll for the alloc to land. cpufast/gpufast schedule in seconds.
         deadline = time.time() + 30.0
-        alloc: alloc_mod.Allocation | None = None
+        node = ""
         while time.time() < deadline:
-            alloc = alloc_mod.find_strongest(cfg)
-            if alloc is not None:
+            node = slurm.node_for(cfg, jobid)
+            if node:
                 break
             time.sleep(1.0)
-        if alloc is None:
+        if not node:
             self.app.call_from_thread(
                 self._notify_error,
-                "submission didn't produce a running allocation within 30s",
+                f"job {jobid} didn't get a node assigned within 30s",
             )
             return
-        self.app.call_from_thread(self._attach_to, kind, alloc, folder)
+        self.app.call_from_thread(
+            self._attach_to, kind, alloc_mod.Allocation(node=node, jobid=jobid), folder
+        )
 
     # ----- new instance only (no auto-attach) -----
 
@@ -863,9 +845,18 @@ class RciApp(App):
 
     CSS = CSS
     TITLE = "RCI Cluster Manager"
+    # Drop the default ``^p palette`` footer entry — we don't expose any
+    # actions through it, so the Ctrl-prefixed key only adds clutter next to
+    # the single-letter bindings.
+    ENABLE_COMMAND_PALETTE = False
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "quit", "Quit"),
+        # Hide Textual's default ``^q`` / ``^c`` footer entries — ``q`` alone
+        # is the documented exit key, and the Ctrl-prefixed duplicates just
+        # add noise next to the single-letter bindings.
+        Binding("ctrl+q", "quit", "Quit", show=False),
+        Binding("ctrl+c", "quit", "Quit", show=False),
         Binding("t", "toggle_theme", "Theme", show=False),
     ]
 
@@ -875,8 +866,9 @@ class RciApp(App):
         self.theme = "ansi-dark"
 
     def action_toggle_theme(self) -> None:
-        # Quick escape hatch if the ansi palette looks bad on a given terminal.
-        order = ["ansi-dark", "gruvbox", "nord", "monokai", "textual-dark"]
+        # Minimal cycle: stick with the terminal palette by default, fall back
+        # to Textual's own dark theme if ansi colors look bad on this terminal.
+        order = ["ansi-dark", "textual-dark"]
         try:
             idx = order.index(self.theme)
         except ValueError:

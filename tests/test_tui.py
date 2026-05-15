@@ -2,27 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from rci_cli import alloc as alloc_mod
 from rci_cli import launch
-from rci_cli import sessions
 from rci_cli import slurm
 from rci_cli.alloc import Allocation
-from rci_cli.sessions import SessionCounts
 from rci_cli.tui import RUNNING_STATES, JobRow, JobsPanel, RciApp
-
-
-@pytest.fixture(autouse=True)
-def _no_real_session_probe(monkeypatch):
-    """Block tui.refresh_jobs from actually ssh-ing into compute nodes.
-
-    Without this every TUI test would wait on real ``ssh`` calls to ``n01``,
-    ``g05`` etc. — the hosts don't exist in the test environment so we'd
-    hang on the ``SESSION_PROBE_TIMEOUT`` for each. Override here returns an
-    empty dict; individual tests can re-patch to assert session UX.
-    """
-    monkeypatch.setattr(sessions, "count_for_jobs", lambda pairs, **kw: {})
 
 
 # ── JobRow parser (pure unit) ───────────────────────────────────────────────
@@ -97,7 +81,6 @@ def test_jobrow_returns_none_for_garbage() -> None:
 async def test_app_mounts_with_jobs_tab(monkeypatch) -> None:
     """The app composes a TabbedContent with a JobsPanel; refresh doesn't crash."""
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
-    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
 
     app = RciApp()
     async with app.run_test() as pilot:
@@ -118,10 +101,6 @@ async def test_refresh_populates_table(monkeypatch) -> None:
             "1234568 gpufast dev-gpu RUNNING 00:10 04:00:00 8 32G gpu:1 g05\n"
         ),
     )
-    monkeypatch.setattr(
-        alloc_mod, "find_strongest", lambda cfg: Allocation(node="g05", jobid="1234568")
-    )
-
     app = RciApp()
     async with app.run_test() as pilot:
         # Give the refresh worker a couple of frames to land.
@@ -139,10 +118,6 @@ async def test_shell_action_opens_folder_modal(monkeypatch) -> None:
     from rci_cli.tui import FolderModal
 
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
-    monkeypatch.setattr(
-        alloc_mod, "find_strongest",
-        lambda cfg: Allocation(node="n01", jobid="1234567"),
-    )
 
     app = RciApp()
     async with app.run_test() as pilot:
@@ -153,12 +128,15 @@ async def test_shell_action_opens_folder_modal(monkeypatch) -> None:
         assert isinstance(app.screen, FolderModal)
 
 
-async def test_shell_attaches_after_folder_with_existing_alloc(monkeypatch) -> None:
-    """Folder dismiss with existing alloc → launch_shell with the resolved folder."""
-    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+async def test_shell_attaches_to_selected_running_row(monkeypatch) -> None:
+    """Folder dismissed with a running row under the cursor → attach there."""
     monkeypatch.setattr(
-        alloc_mod, "find_strongest",
-        lambda cfg: Allocation(node="g05", jobid="9999"),
+        slurm,
+        "list_jobs",
+        lambda cfg: (
+            "JOBID PARTITION NAME STATE TIME LIMIT CPU MEM GRES NODE\n"
+            "111 cpufast picked RUNNING 00:05 01:00:00 2 4G N/A n42\n"
+        ),
     )
 
     called: dict[str, object] = {}
@@ -174,6 +152,10 @@ async def test_shell_attaches_after_folder_with_existing_alloc(monkeypatch) -> N
     async with app.run_test() as pilot:
         await pilot.pause()
         panel = app.query_one(JobsPanel)
+        for _ in range(60):
+            if panel._rows:
+                break
+            await pilot.pause(0.05)
         from contextlib import contextmanager
 
         @contextmanager
@@ -181,19 +163,18 @@ async def test_shell_attaches_after_folder_with_existing_alloc(monkeypatch) -> N
             yield
 
         monkeypatch.setattr(app, "suspend", noop_suspend)
-        # Drive the folder→attach path directly, simulating modal dismissal with "sam2rl".
         panel._after_folder("shell", "sam2rl")
     assert called.get("alloc") is not None, "launch_shell was never invoked"
-    assert called["alloc"].node == "g05"
+    assert called["alloc"].node == "n42"
+    assert called["alloc"].jobid == "111"
     assert called["folder"] == "/home/cizekto2/sam2rl"
 
 
-async def test_after_folder_with_no_alloc_pushes_new_instance_modal(monkeypatch) -> None:
-    """Folder dismiss with NO existing alloc → push NewInstanceModal."""
+async def test_after_folder_with_no_usable_row_pushes_new_instance_modal(monkeypatch) -> None:
+    """Empty table → New Instance modal pops, since there's nothing to attach to."""
     from rci_cli.tui import NewInstanceModal
 
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
-    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
 
     app = RciApp()
     async with app.run_test() as pilot:
@@ -204,56 +185,10 @@ async def test_after_folder_with_no_alloc_pushes_new_instance_modal(monkeypatch)
         assert isinstance(app.screen, NewInstanceModal)
 
 
-async def test_shell_prefers_selected_running_row_over_find_strongest(monkeypatch) -> None:
-    """The cursor's row wins over ``find_strongest`` so shell attaches to the
-    job the user is actually looking at, not to whichever vscode-named job
-    happens to be running."""
-    monkeypatch.setattr(
-        slurm,
-        "list_jobs",
-        lambda cfg: (
-            "JOBID PARTITION NAME STATE TIME LIMIT CPU MEM GRES NODE\n"
-            "111 cpufast picked RUNNING 00:05 01:00:00 2 4G N/A n42\n"
-        ),
-    )
-    # find_strongest would steer to a *different* node — verify we ignore it.
-    monkeypatch.setattr(
-        alloc_mod, "find_strongest",
-        lambda cfg: Allocation(node="g99", jobid="999"),
-    )
+async def test_after_folder_with_pending_row_pushes_new_instance_modal(monkeypatch) -> None:
+    """A PENDING row can't be ssh'd into → fall through to the New Instance modal."""
+    from rci_cli.tui import NewInstanceModal
 
-    called: dict[str, object] = {}
-
-    def fake_shell(alloc, folder, cfg):
-        called["alloc"] = alloc
-        return 0
-
-    monkeypatch.setattr(launch, "launch_shell", fake_shell)
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        panel = app.query_one(JobsPanel)
-        # Wait for the table to populate so a row is selectable.
-        for _ in range(60):
-            if panel._rows:
-                break
-            await pilot.pause(0.05)
-        from contextlib import contextmanager
-
-        @contextmanager
-        def noop_suspend():
-            yield
-
-        monkeypatch.setattr(app, "suspend", noop_suspend)
-        panel._after_folder("shell", "")
-    assert called.get("alloc") is not None, "launch_shell was never invoked"
-    assert called["alloc"].node == "n42", "selected row's node should win"
-    assert called["alloc"].jobid == "111"
-
-
-async def test_shell_falls_back_to_find_strongest_when_selected_row_pending(monkeypatch) -> None:
-    """A PENDING row can't be ssh'd into; fall back to ``find_strongest``."""
     monkeypatch.setattr(
         slurm,
         "list_jobs",
@@ -262,18 +197,6 @@ async def test_shell_falls_back_to_find_strongest_when_selected_row_pending(monk
             "222 cpufast queued PENDING 0:00 01:00:00 2 4G N/A (Resources)\n"
         ),
     )
-    monkeypatch.setattr(
-        alloc_mod, "find_strongest",
-        lambda cfg: Allocation(node="g05", jobid="888"),
-    )
-
-    called: dict[str, object] = {}
-
-    def fake_shell(alloc, folder, cfg):
-        called["alloc"] = alloc
-        return 0
-
-    monkeypatch.setattr(launch, "launch_shell", fake_shell)
 
     app = RciApp()
     async with app.run_test() as pilot:
@@ -283,15 +206,9 @@ async def test_shell_falls_back_to_find_strongest_when_selected_row_pending(monk
             if panel._rows:
                 break
             await pilot.pause(0.05)
-        from contextlib import contextmanager
-
-        @contextmanager
-        def noop_suspend():
-            yield
-
-        monkeypatch.setattr(app, "suspend", noop_suspend)
         panel._after_folder("shell", "")
-    assert called["alloc"].node == "g05"
+        await pilot.pause()
+        assert isinstance(app.screen, NewInstanceModal)
 
 
 async def test_folder_modal_prefills_last_folder(monkeypatch, tmp_path) -> None:
@@ -303,7 +220,6 @@ async def test_folder_modal_prefills_last_folder(monkeypatch, tmp_path) -> None:
     state.set_last_folder("sam2rl")
 
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
-    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
 
     app = RciApp()
     async with app.run_test() as pilot:
@@ -315,6 +231,64 @@ async def test_folder_modal_prefills_last_folder(monkeypatch, tmp_path) -> None:
         from textual.widgets import Input
         folder_input = app.screen.query_one("#folder", Input)
         assert folder_input.value == "sam2rl"
+
+
+async def test_new_instance_modal_q_cancels(monkeypatch) -> None:
+    """Pressing ``q`` on the New-Instance modal must close it with ``None``."""
+    from rci_cli.tui import AllocParams, NewInstanceModal
+    from rci_cli.config import Config
+
+    captured: dict[str, object] = {"params": "untouched"}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def remember(p: AllocParams | None) -> None:
+            captured["params"] = p
+
+        app.push_screen(NewInstanceModal(Config()), remember)
+        await pilot.pause()
+        assert isinstance(app.screen, NewInstanceModal)
+        # Move focus off the partition Select (where 'q' might not bubble) so
+        # the test exercises the modal binding cleanly. The first Select is
+        # already a non-text widget, but pressing Tab once lands us on the
+        # second one — either way q should reach the screen binding.
+        await pilot.press("q")
+        await pilot.pause()
+    assert captured["params"] is None, "q should dismiss with None"
+
+
+async def test_new_instance_modal_enter_submits_defaults(monkeypatch) -> None:
+    """Regression: pressing Enter on the New-Instance modal must submit the
+    form with its default values, even when focus is on the partition Select
+    (where Enter would otherwise just toggle the dropdown overlay)."""
+    from rci_cli.tui import AllocParams, NewInstanceModal
+    from rci_cli.config import Config
+
+    captured: dict[str, AllocParams | None] = {"params": None}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def remember(p: AllocParams | None) -> None:
+            captured["params"] = p
+
+        app.push_screen(NewInstanceModal(Config()), remember)
+        await pilot.pause()
+        assert isinstance(app.screen, NewInstanceModal)
+        await pilot.press("enter")
+        await pilot.pause()
+    assert captured["params"] is not None, "Enter did not submit the modal"
+    # Defaults from Config: cpu_defaults = (2, 4, "1:00:00") + cpu/fast.
+    p = captured["params"]
+    assert p.partition == "cpufast"
+    assert p.cores == 2
+    assert p.mem_gb == 4
+    assert p.walltime == "1:00:00"
+    assert p.gpus == 0
+    assert p.kind == "cpu"
 
 
 def test_state_round_trip(monkeypatch, tmp_path) -> None:
@@ -373,7 +347,6 @@ async def test_action_log_auto_clears(monkeypatch) -> None:
 
     monkeypatch.setattr(tui_mod, "ACTION_FADE_SECONDS", 0.1)
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
-    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
 
     app = RciApp()
     async with app.run_test() as pilot:
@@ -386,78 +359,11 @@ async def test_action_log_auto_clears(monkeypatch) -> None:
         assert panel._last_action == ""
 
 
-async def test_sessions_populate_into_table_and_state(monkeypatch) -> None:
-    """Mocked count_for_jobs results must land in the table cell and in the
-    panel's ``_sessions`` map (used by the cancel-confirm)."""
-    monkeypatch.setattr(
-        slurm,
-        "list_jobs",
-        lambda cfg: (
-            "JOBID PARTITION NAME STATE TIME LIMIT CPU MEM GRES NODE\n"
-            "1234567 cpufast dev RUNNING 00:05 01:00:00 2 4G N/A n01\n"
-        ),
-    )
-    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
-    monkeypatch.setattr(
-        sessions,
-        "count_for_jobs",
-        lambda pairs, **kw: {"1234567": SessionCounts(shell=1, editor=1)},
-    )
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        for _ in range(5):
-            await pilot.pause(0.05)
-        panel = app.query_one(JobsPanel)
-        assert panel._sessions["1234567"] == SessionCounts(shell=1, editor=1)
-        # The Sessions cell is the last column of the only row.
-        from textual.widgets import DataTable
-
-        table = panel.query_one("#jobs-table", DataTable)
-        last_col_value = table.get_row_at(0)[-1]
-        assert last_col_value == "1s 1e"
-
-
-async def test_cancel_confirm_mentions_active_sessions(monkeypatch) -> None:
-    """The cancel-confirm modal's prompt must include the session description
-    when the selected job has live ssh attachments."""
-    from rci_cli.tui import ConfirmModal
-
-    monkeypatch.setattr(
-        slurm,
-        "list_jobs",
-        lambda cfg: (
-            "JOBID PARTITION NAME STATE TIME LIMIT CPU MEM GRES NODE\n"
-            "555 cpufast dev RUNNING 00:05 01:00:00 2 4G N/A n01\n"
-        ),
-    )
-    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
-    monkeypatch.setattr(
-        sessions,
-        "count_for_jobs",
-        lambda pairs, **kw: {"555": SessionCounts(editor=1)},
-    )
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        for _ in range(5):
-            await pilot.pause(0.05)
-        panel = app.query_one(JobsPanel)
-        panel.action_cancel_job()
-        await pilot.pause()
-        assert isinstance(app.screen, ConfirmModal)
-        assert "1 editor session" in app.screen.prompt
-        assert "will be killed" in app.screen.prompt
-
-
 async def test_refresh_handles_squeue_failure_gracefully(monkeypatch) -> None:
     def boom(cfg):
         raise RuntimeError("network blip")
 
     monkeypatch.setattr(slurm, "list_jobs", boom)
-    monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
 
     app = RciApp()
     async with app.run_test() as pilot:

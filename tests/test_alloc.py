@@ -6,7 +6,7 @@ import pytest
 
 from rci_cli import alloc as alloc_mod
 from rci_cli import slurm
-from rci_cli.alloc import Allocation, AllocationError, find_strongest, select_or_submit
+from rci_cli.alloc import Allocation, AllocationError, select_or_submit
 from rci_cli.config import Config
 
 
@@ -21,33 +21,6 @@ def _patch_jobs(monkeypatch, by_name: dict[str, list[str]]) -> None:
 
 def _patch_node(monkeypatch, mapping: dict[str, str]) -> None:
     monkeypatch.setattr(slurm, "node_for", lambda cfg, jobid: mapping.get(jobid, ""))
-
-
-# ── find_strongest ──────────────────────────────────────────────────────────
-
-
-def test_find_strongest_returns_gpu_when_present(monkeypatch, cfg: Config) -> None:
-    _patch_jobs(monkeypatch, {"dev-gpu": ["2222"], "dev": ["1111"]})
-    _patch_node(monkeypatch, {"2222": "g05"})
-    assert find_strongest(cfg) == Allocation(node="g05", jobid="2222")
-
-
-def test_find_strongest_falls_back_to_cpu_when_no_gpu(monkeypatch, cfg: Config) -> None:
-    _patch_jobs(monkeypatch, {"dev": ["1111"]})
-    _patch_node(monkeypatch, {"1111": "n01"})
-    assert find_strongest(cfg) == Allocation(node="n01", jobid="1111")
-
-
-def test_find_strongest_returns_none_when_no_jobs(monkeypatch, cfg: Config) -> None:
-    _patch_jobs(monkeypatch, {})
-    _patch_node(monkeypatch, {})
-    assert find_strongest(cfg) is None
-
-
-def test_find_strongest_returns_none_when_node_not_assigned(monkeypatch, cfg: Config) -> None:
-    _patch_jobs(monkeypatch, {"dev": ["1111"]})
-    _patch_node(monkeypatch, {})  # node_for returns ""
-    assert find_strongest(cfg) is None
 
 
 # ── select_or_submit ────────────────────────────────────────────────────────
