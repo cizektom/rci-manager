@@ -88,13 +88,31 @@ async def test_refresh_populates_table(monkeypatch) -> None:
         assert panel._rows[1].name == "vscode-gpu"
 
 
-async def test_shell_action_attaches_to_strongest_alloc(monkeypatch) -> None:
-    """Pressing `s` attaches to the strongest running allocation via launch_shell."""
+async def test_shell_action_opens_folder_modal(monkeypatch) -> None:
+    """Pressing `s` first pops a FolderModal so the user can choose a directory."""
+    from rci_cli.tui import FolderModal
+
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
     monkeypatch.setattr(
-        alloc_mod,
-        "find_strongest",
+        alloc_mod, "find_strongest",
         lambda cfg: Allocation(node="n01", jobid="1234567"),
+    )
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel.action_shell_into()
+        await pilot.pause()
+        assert isinstance(app.screen, FolderModal)
+
+
+async def test_shell_attaches_after_folder_with_existing_alloc(monkeypatch) -> None:
+    """Folder dismiss with existing alloc → launch_shell with the resolved folder."""
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setattr(
+        alloc_mod, "find_strongest",
+        lambda cfg: Allocation(node="g05", jobid="9999"),
     )
 
     called: dict[str, object] = {}
@@ -110,7 +128,6 @@ async def test_shell_action_attaches_to_strongest_alloc(monkeypatch) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         panel = app.query_one(JobsPanel)
-        # ``app.suspend`` would actually flip the terminal; bypass it for the test.
         from contextlib import contextmanager
 
         @contextmanager
@@ -118,28 +135,36 @@ async def test_shell_action_attaches_to_strongest_alloc(monkeypatch) -> None:
             yield
 
         monkeypatch.setattr(app, "suspend", noop_suspend)
-        panel.action_shell_into()
+        # Drive the folder→attach path directly, simulating modal dismissal with "sam2rl".
+        panel._after_folder("shell", "sam2rl")
     assert called.get("alloc") is not None, "launch_shell was never invoked"
-    assert called["alloc"].node == "n01"
-    assert called["alloc"].jobid == "1234567"
+    assert called["alloc"].node == "g05"
+    assert called["folder"] == "/home/cizekto2/sam2rl"
 
 
-async def test_shell_action_pops_modal_when_no_alloc(monkeypatch) -> None:
-    """When no allocation exists, pressing `s` opens the New Instance modal."""
+async def test_after_folder_with_no_alloc_pushes_new_instance_modal(monkeypatch) -> None:
+    """Folder dismiss with NO existing alloc → push NewInstanceModal."""
     from rci_cli.tui import NewInstanceModal
 
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
     monkeypatch.setattr(alloc_mod, "find_strongest", lambda cfg: None)
-    monkeypatch.setattr(launch, "launch_shell", lambda *a, **kw: 0)
 
     app = RciApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         panel = app.query_one(JobsPanel)
-        panel.action_shell_into()
+        panel._after_folder("shell", "")
         await pilot.pause()
-        # The modal is pushed; the active screen should be a NewInstanceModal.
         assert isinstance(app.screen, NewInstanceModal)
+
+
+def test_is_gpu_partition_matches_known_prefixes() -> None:
+    from rci_cli.tui import _is_gpu_partition
+
+    for ok in ("gpu", "gpufast", "amdgpu", "amdgpufast", "h200", "h200fast", "GPU"):
+        assert _is_gpu_partition(ok), ok
+    for bad in ("cpu", "cpufast", "long", ""):
+        assert not _is_gpu_partition(bad), bad
 
 
 async def test_action_log_auto_clears(monkeypatch) -> None:

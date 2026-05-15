@@ -28,8 +28,6 @@ from textual.widgets import (
     Header,
     Input,
     Label,
-    RadioButton,
-    RadioSet,
     Static,
     TabbedContent,
     TabPane,
@@ -93,110 +91,128 @@ class ConfirmModal(ModalScreen[bool]):
 
 @dataclass(frozen=True)
 class AllocParams:
-    """Result of :class:`NewInstanceModal`. Carries everything ``slurm.submit_*`` needs."""
+    """Result of :class:`NewInstanceModal`. Same shape for CPU and GPU jobs."""
 
-    kind: str  # "cpu" or "gpu"
     partition: str
     cores: int
+    gpus: int  # 0 → CPU job (dispatches to slurm.submit_cpu); else GPU job
     mem_gb: int
     walltime: str
-    gpus: int = 0  # only meaningful when kind == "gpu"
+
+    @property
+    def kind(self) -> str:
+        return "gpu" if self.gpus > 0 else "cpu"
+
+
+# Partition prefixes that accept ``--gres=gpu:N`` on this cluster.
+_GPU_PARTITION_PREFIXES = ("gpu", "amdgpu", "h200")
+
+
+def _is_gpu_partition(p: str) -> bool:
+    p = p.strip().lower()
+    return any(p.startswith(prefix) for prefix in _GPU_PARTITION_PREFIXES)
 
 
 class NewInstanceModal(ModalScreen[AllocParams | None]):
-    """Single configure-and-submit modal for both CPU and GPU allocations.
+    """Unified configure-and-submit dialog for both CPU and GPU allocations.
 
-    Top radio toggles kind; switching kind swaps the partition default and
-    shows/hides the GPUs field. All numeric values prefilled from the relevant
-    ``cfg.cpu_defaults`` / ``cfg.gpu_defaults`` tuple.
+    No CPU/GPU toggle — the *kind* is derived from the ``GPUs`` field
+    (``> 0`` ⇒ GPU job, dispatched to ``slurm.submit_gpu``; ``0`` ⇒ CPU
+    job, dispatched to ``slurm.submit_cpu``). A hint under the partition
+    field lists known partition names; if ``GPUs > 0`` the partition must
+    match one of the GPU-capable patterns (``gpu*``, ``amdgpu*``, ``h200*``).
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, cfg: Config, *, initial_kind: str = "cpu") -> None:
+    def __init__(self, cfg: Config) -> None:
         super().__init__()
         self.cfg = cfg
-        self._kind = initial_kind
 
     def compose(self) -> ComposeResult:
         cpu_cores, cpu_mem, cpu_time = self.cfg.cpu_defaults
-        gpu_count, gpu_cores, gpu_mem, gpu_time = self.cfg.gpu_defaults
         with Container(id="modal-box"):
             yield Label("[b]New instance[/b]", id="modal-title")
-            with RadioSet(id="kind"):
-                yield RadioButton("CPU", value=(self._kind == "cpu"), id="kind-cpu")
-                yield RadioButton("GPU", value=(self._kind == "gpu"), id="kind-gpu")
             yield Label("Partition")
-            yield Input(
-                value=self.cfg.cpu_partition if self._kind == "cpu" else self.cfg.gpu_partition,
-                id="partition",
+            yield Input(value=self.cfg.cpu_partition, id="partition")
+            yield Label(
+                "[dim]cpu · cpufast · gpu · gpufast · amdgpu · h200[/dim]",
+                id="partition-hint",
             )
-            # GPU count — only relevant when kind == "gpu"; we toggle the row's
-            # display on radio change rather than re-composing.
-            yield Label("GPUs", id="gpus-label")
-            yield Input(value=str(gpu_count), id="gpus", type="integer")
             yield Label("Cores")
-            yield Input(
-                value=str(cpu_cores if self._kind == "cpu" else gpu_cores),
-                id="cores",
-                type="integer",
-            )
+            yield Input(value=str(cpu_cores), id="cores", type="integer")
+            yield Label("GPUs  [dim](0 = CPU job)[/dim]")
+            yield Input(value="0", id="gpus", type="integer")
             yield Label("Memory (GB)")
-            yield Input(
-                value=str(cpu_mem if self._kind == "cpu" else gpu_mem),
-                id="mem",
-                type="integer",
-            )
+            yield Input(value=str(cpu_mem), id="mem", type="integer")
             yield Label("Walltime (HH:MM:SS)")
-            yield Input(value=cpu_time if self._kind == "cpu" else gpu_time, id="time")
+            yield Input(value=cpu_time, id="time")
             with Horizontal(id="modal-buttons"):
                 yield Button("Submit", variant="primary", id="ok")
                 yield Button("Cancel", id="cancel")
-
-    def on_mount(self) -> None:
-        self._apply_kind_visibility()
-
-    def _apply_kind_visibility(self) -> None:
-        is_gpu = self._kind == "gpu"
-        self.query_one("#gpus-label", Label).display = is_gpu
-        self.query_one("#gpus", Input).display = is_gpu
-
-    @on(RadioSet.Changed, "#kind")
-    def _kind_changed(self, event: RadioSet.Changed) -> None:
-        new_kind = "gpu" if event.pressed.id == "kind-gpu" else "cpu"
-        if new_kind == self._kind:
-            return
-        self._kind = new_kind
-        # Swap partition + numeric defaults to whichever side the user just picked.
-        cpu_cores, cpu_mem, cpu_time = self.cfg.cpu_defaults
-        gpu_count, gpu_cores, gpu_mem, gpu_time = self.cfg.gpu_defaults
-        self.query_one("#partition", Input).value = (
-            self.cfg.gpu_partition if new_kind == "gpu" else self.cfg.cpu_partition
-        )
-        self.query_one("#cores", Input).value = str(gpu_cores if new_kind == "gpu" else cpu_cores)
-        self.query_one("#mem", Input).value = str(gpu_mem if new_kind == "gpu" else cpu_mem)
-        self.query_one("#time", Input).value = gpu_time if new_kind == "gpu" else cpu_time
-        self.query_one("#gpus", Input).value = str(gpu_count)
-        self._apply_kind_visibility()
 
     @on(Button.Pressed, "#ok")
     @on(Input.Submitted)
     def _ok(self) -> None:
         try:
-            params = AllocParams(
-                kind=self._kind,
-                partition=self.query_one("#partition", Input).value.strip(),
-                cores=int(self.query_one("#cores", Input).value or "0"),
-                mem_gb=int(self.query_one("#mem", Input).value or "0"),
-                walltime=self.query_one("#time", Input).value.strip(),
-                gpus=int(self.query_one("#gpus", Input).value or "0") if self._kind == "gpu" else 0,
-            )
+            partition = self.query_one("#partition", Input).value.strip()
+            cores = int(self.query_one("#cores", Input).value or "0")
+            gpus = int(self.query_one("#gpus", Input).value or "0")
+            mem_gb = int(self.query_one("#mem", Input).value or "0")
+            walltime = self.query_one("#time", Input).value.strip()
         except ValueError:
             self.app.notify("Invalid number", severity="error")
             return
-        self.dismiss(params)
+        if gpus > 0 and not _is_gpu_partition(partition):
+            self.app.notify(
+                f"Partition '{partition}' doesn't accept GPUs — use gpu*, amdgpu*, or h200*.",
+                severity="error",
+                timeout=6,
+            )
+            return
+        self.dismiss(
+            AllocParams(
+                partition=partition,
+                cores=cores,
+                gpus=gpus,
+                mem_gb=mem_gb,
+                walltime=walltime,
+            )
+        )
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class FolderModal(ModalScreen[str | None]):
+    """Quick prompt: which folder on the compute node? Empty string = home."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, prompt: str = "Folder on compute node") -> None:
+        super().__init__()
+        self.prompt = prompt
+
+    def compose(self) -> ComposeResult:
+        with Container(id="modal-box"):
+            yield Label(f"[b]{self.prompt}[/b]  [dim](empty = home)[/dim]", id="modal-title")
+            yield Input(value="", id="folder", placeholder="e.g. sam2rl  or  /scratch/exp42")
+            with Horizontal(id="modal-buttons"):
+                yield Button("Open", variant="primary", id="ok")
+                yield Button("Cancel", id="cancel")
+
+    @on(Button.Pressed, "#ok")
+    @on(Input.Submitted)
+    def _ok(self) -> None:
+        self.dismiss(self.query_one("#folder", Input).value.strip())
 
     @on(Button.Pressed, "#cancel")
     def _cancel(self) -> None:
@@ -378,67 +394,81 @@ class JobsPanel(Container):
             self.app.call_from_thread(self._notify_error, f"scancel {jobid} exited {rc}")
         self.refresh_jobs()
 
-    # ----- shell / editor: auto-attach, or pop the New Instance modal -----
+    # ----- shell / editor: pick folder → attach existing alloc OR spawn one -----
 
     def action_shell_into(self) -> None:
-        self._attach_or_spawn("shell")
+        self._pick_folder_then("shell")
 
     def action_editor_into(self) -> None:
-        self._attach_or_spawn("editor")
+        self._pick_folder_then("editor")
 
-    def _attach_or_spawn(self, kind: str) -> None:
-        """If a vscode allocation is already running, attach to it. Else pop the modal."""
+    def _pick_folder_then(self, kind: str) -> None:
+        prompt = f"{kind.capitalize()} into folder"
+        self.app.push_screen(
+            FolderModal(prompt),
+            lambda folder: self._after_folder(kind, folder),
+        )
+
+    def _after_folder(self, kind: str, folder: str | None) -> None:
+        if folder is None:
+            return  # user cancelled the folder prompt
         cfg = load()
         alloc = alloc_mod.find_strongest(cfg)
         if alloc is not None:
-            self._attach_to(kind, alloc)
+            self._attach_to(kind, alloc, folder)
             return
-        # No allocation — ask the user to configure one, then attach.
+        # No allocation — collect alloc params, then submit + wait + attach to folder.
         self.app.push_screen(
             NewInstanceModal(cfg),
-            lambda params: self._submit_then_attach(kind, params) if params else None,
+            lambda params: (
+                self._submit_then_attach(kind, params, folder) if params else None
+            ),
         )
 
-    def _attach_to(self, kind: str, alloc: alloc_mod.Allocation) -> None:
+    def _attach_to(
+        self, kind: str, alloc: alloc_mod.Allocation, folder_arg: str = ""
+    ) -> None:
         cfg = load()
-        folder = launch.resolve_folder("", cfg)
+        folder_abs = launch.resolve_folder(folder_arg, cfg)
         if kind == "editor":
-            self._notify_action(f"opening editor on {alloc.node}")
-            launch.launch_editor(alloc, folder, cfg)
+            self._notify_action(f"opening editor on {alloc.node} ({folder_abs})")
+            launch.launch_editor(alloc, folder_abs, cfg)
             return
         # shell: suspend the TUI so ssh has the terminal.
-        self._notify_action(f"attaching to {alloc.node} (shell)… exit to return")
+        self._notify_action(f"attaching to {alloc.node} ({folder_abs})… exit to return")
         with self.app.suspend():
-            launch.launch_shell(alloc, folder, cfg)
+            launch.launch_shell(alloc, folder_abs, cfg)
         self._notify_action(f"returned from {alloc.node}")
         self.refresh_jobs()
 
-    def _submit_then_attach(self, kind: str, params: AllocParams) -> None:
+    def _submit_then_attach(self, kind: str, params: AllocParams, folder: str) -> None:
         self._notify_action(
             f"submitting {params.kind} ({params.partition}; {params.cores}c/{params.mem_gb}G/{params.walltime})…"
         )
-        self._do_submit_and_attach(kind, params)
+        self._do_submit_and_attach(kind, params, folder)
 
     @work(thread=True, exclusive=True, group="action")
-    def _do_submit_and_attach(self, kind: str, params: AllocParams) -> None:
+    def _do_submit_and_attach(self, kind: str, params: AllocParams, folder: str) -> None:
         import time
         cfg = load()
         try:
-            if params.kind == "cpu":
-                out = slurm.submit_cpu(
-                    cfg, params.cores, params.mem_gb, params.walltime,
+            if params.gpus > 0:
+                out = slurm.submit_gpu(
+                    cfg, params.gpus, params.cores, params.mem_gb, params.walltime,
                     partition=params.partition or None,
                 )
             else:
-                out = slurm.submit_gpu(
-                    cfg, params.gpus, params.cores, params.mem_gb, params.walltime,
+                out = slurm.submit_cpu(
+                    cfg, params.cores, params.mem_gb, params.walltime,
                     partition=params.partition or None,
                 )
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._notify_error, f"submit failed: {e}")
             return
         first_line = (out.strip().splitlines() or [""])[0]
-        self.app.call_from_thread(self._notify_action, f"submitted ({first_line}); waiting for node…")
+        self.app.call_from_thread(
+            self._notify_action, f"submitted ({first_line}); waiting for node…"
+        )
         # Poll for the alloc to land. cpufast/gpufast schedule in seconds.
         deadline = time.time() + 30.0
         alloc: alloc_mod.Allocation | None = None
@@ -449,10 +479,11 @@ class JobsPanel(Container):
             time.sleep(1.0)
         if alloc is None:
             self.app.call_from_thread(
-                self._notify_error, "submission didn't produce a running allocation within 30s"
+                self._notify_error,
+                "submission didn't produce a running allocation within 30s",
             )
             return
-        self.app.call_from_thread(self._attach_to, kind, alloc)
+        self.app.call_from_thread(self._attach_to, kind, alloc, folder)
 
     # ----- new instance only (no auto-attach) -----
 
@@ -556,7 +587,9 @@ Tab.-active { color: ansi_cyan; text-style: bold; }
 #jobs-table > .datatable--hover { background: ansi_default; }
 
 /* Modals: bordered dialog, centered in the TUI viewport. */
-ConfirmModal, NewInstanceModal { align: center middle; }
+ConfirmModal, NewInstanceModal, FolderModal { align: center middle; }
+
+#partition-hint { color: ansi_bright_black; padding-bottom: 1; }
 
 #modal-box {
     background: ansi_default;
@@ -568,9 +601,6 @@ ConfirmModal, NewInstanceModal { align: center middle; }
     max-height: 30;
 }
 
-/* RadioSet at the top of NewInstanceModal — keep it tight, horizontal feel. */
-#modal-box RadioSet { border: none; padding: 0 0 1 0; height: auto; }
-#modal-box RadioSet > RadioButton { padding: 0 2 0 0; }
 
 #modal-title, #modal-prompt {
     padding-bottom: 1;
