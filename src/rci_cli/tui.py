@@ -145,9 +145,29 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
     def __init__(self, cfg: Config) -> None:
         super().__init__()
         self.cfg = cfg
+        # Pre-fill from the last submitted params (persisted across sessions),
+        # falling back to ``Config`` defaults if nothing's saved or a field
+        # got corrupted. Validate enum-like fields so a stale state.json
+        # doesn't crash the modal — fall back silently instead.
+        last = state.get_last_instance_params() or {}
+        cpu_cores, cpu_mem, cpu_time = cfg.cpu_defaults
+        valid_classes = {value for _label, value in PARTITION_CLASSES}
+
+        ptype = last.get("partition_type")
+        pclass = last.get("partition_class")
+        cores = last.get("cores")
+        gpus = last.get("gpus")
+        mem_gb = last.get("mem_gb")
+        walltime = last.get("walltime")
+
+        self._init_ptype = ptype if isinstance(ptype, str) and ptype in PARTITION_TYPES else "cpu"
+        self._init_pclass = pclass if isinstance(pclass, str) and pclass in valid_classes else "fast"
+        self._init_cores = str(cores) if isinstance(cores, int) and cores > 0 else str(cpu_cores)
+        self._init_gpus = str(gpus) if isinstance(gpus, int) and gpus >= 0 else "0"
+        self._init_mem = str(mem_gb) if isinstance(mem_gb, int) and mem_gb > 0 else str(cpu_mem)
+        self._init_time = walltime if isinstance(walltime, str) and walltime else cpu_time
 
     def compose(self) -> ComposeResult:
-        cpu_cores, cpu_mem, cpu_time = self.cfg.cpu_defaults
         # VerticalScroll so the modal stays usable on shorter terminals — the
         # form scrolls within the box once it grows past the viewport's height.
         with VerticalScroll(id="modal-box"):
@@ -156,31 +176,32 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
             with Horizontal(id="partition-row"):
                 yield Select(
                     [(t, t) for t in PARTITION_TYPES],
-                    value="cpu",
+                    value=self._init_ptype,
                     id="partition-type",
                     allow_blank=False,
                 )
                 yield Select(
                     list(PARTITION_CLASSES),
-                    value="fast",
+                    value=self._init_pclass,
                     id="partition-class",
                     allow_blank=False,
                 )
             yield Label("Cores")
-            yield Input(value=str(cpu_cores), id="cores", type="integer")
+            yield Input(value=self._init_cores, id="cores", type="integer")
             yield Label("GPUs  [dim](0 = CPU job)[/dim]", id="gpus-label")
-            yield Input(value="0", id="gpus", type="integer")
+            yield Input(value=self._init_gpus, id="gpus", type="integer")
             yield Label("Memory (GB)")
-            yield Input(value=str(cpu_mem), id="mem", type="integer")
+            yield Input(value=self._init_mem, id="mem", type="integer")
             yield Label("Walltime (HH:MM:SS)")
-            yield Input(value=cpu_time, id="time")
+            yield Input(value=self._init_time, id="time")
             with Horizontal(id="modal-buttons"):
                 yield Button("Submit", variant="primary", id="ok")
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        # Default type is CPU → hide the GPUs row until the user picks gpu / amdgpu / h200.
-        self._apply_gpu_visibility("cpu")
+        # Sync the GPUs row visibility to the restored partition type — if the
+        # user's last submission was a GPU job, the field should already be visible.
+        self._apply_gpu_visibility(self._init_ptype)
 
     def _apply_gpu_visibility(self, ptype: str) -> None:
         is_gpu_type = ptype != "cpu"
@@ -219,6 +240,15 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
         if err is not None:
             self.app.notify(err, severity="error", timeout=6)
             return
+        # Persist so the next session opens the modal prefilled with these values.
+        state.set_last_instance_params(
+            partition_type=ptype,
+            partition_class=pclass,
+            cores=cores,
+            gpus=gpus,
+            mem_gb=mem_gb,
+            walltime=walltime,
+        )
         self.dismiss(
             AllocParams(
                 partition=assemble_partition(ptype, pclass),
@@ -436,15 +466,13 @@ class JobsPanel(Container):
         pending = len(rows) - running
         status = self.query_one("#alloc-status", Static)
         if not rows:
-            status.update(
-                "[yellow]○[/yellow] no jobs — press [b]n[/] to submit a new instance"
-            )
+            status.update("no jobs — press [b]n[/] to submit a new instance")
         else:
             parts: list[str] = []
             if running:
-                parts.append(f"[green b]●[/] {running} running")
+                parts.append(f"[green b]{running}[/] running")
             if pending:
-                parts.append(f"[yellow]○[/yellow] {pending} pending")
+                parts.append(f"[yellow]{pending}[/] pending")
             status.update("  [dim]·[/dim]  ".join(parts))
         # Clear the "refreshing…" indicator if a manual refresh just completed.
         # Other action messages stay until their own fade timer fires.
