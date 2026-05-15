@@ -55,6 +55,24 @@ shadow this binary).
 - relative → resolved under `/home/cizekto2` (`rci claude sam2rl` → `/home/cizekto2/sam2rl`)
 - absolute → used as-is
 
+**`--tab` / `-T` for `shell` and `claude`** opens the connection in a *new
+terminal tab* and returns immediately, so the parent `rci` (a CLI invocation
+or the running TUI) stays alive:
+
+```sh
+rci shell --tab               # opens new tab attached to the strongest alloc
+rci claude --tab sam2rl       # ditto, claude in ~/sam2rl
+```
+
+The TUI exposes the same with capital `S` / `L` (lowercase `s` / `l` still
+take over the current terminal). Detected terminals (priority order):
+tmux → zellij → WezTerm → kitty → Windows Terminal (WSL) → iTerm2 → Konsole.
+If nothing matches, the spawn returns rc 2 with an explanatory message.
+
+`--node NODE` skips the squeue lookup and targets a node directly — useful
+when re-spawning into a specific allocation; the `--tab` path uses this
+internally to keep the parent and child on the same node.
+
 **Zellij sessions** (`claude` and `shell`): each launch is wrapped in a named
 zellij session — `<prefix>-<basename-of-folder>[-<suffix>]`:
 

@@ -166,14 +166,33 @@ def cancel_vscode() -> None:
     raise typer.Exit(code=rc)
 
 
+def _resolve_alloc(
+    cfg: Config, *, node: str, require_gpu: bool
+) -> alloc_mod.Allocation:
+    """``--node`` overrides allocation lookup; otherwise pick the strongest running job."""
+    if node:
+        return alloc_mod.Allocation(node=node, jobid="")
+    return _require_alloc(cfg, require_gpu=require_gpu)
+
+
 @app.command()
 def claude(
     folder: Annotated[str, typer.Argument(help="folder on the compute node")] = "",
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
+    tab: Annotated[
+        bool,
+        typer.Option("--tab", "-T", help="open in a new terminal tab; the current rci stays alive"),
+    ] = False,
+    node: Annotated[
+        str,
+        typer.Option("--node", help="target this compute node directly (skip squeue lookup)"),
+    ] = "",
 ) -> None:
     """Run ``claude`` on a compute node. ssh disconnect ends the session — for now."""
     cfg = _cfg()
-    a = _require_alloc(cfg, require_gpu=gpu)
+    a = _resolve_alloc(cfg, node=node, require_gpu=gpu)
+    if tab:
+        sys.exit(launch.launch_claude_in_tab(a, folder, cfg))
     sys.exit(launch.launch_claude(a, launch.resolve_folder(folder, cfg), cfg))
 
 
@@ -181,10 +200,14 @@ def claude(
 def code(
     folder: Annotated[str, typer.Argument()] = "",
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
+    node: Annotated[
+        str,
+        typer.Option("--node", help="target this compute node directly (skip squeue lookup)"),
+    ] = "",
 ) -> None:
     """Open VS Code Remote-SSH on the strongest existing vscode allocation."""
     cfg = _cfg()
-    a = _require_alloc(cfg, require_gpu=gpu)
+    a = _resolve_alloc(cfg, node=node, require_gpu=gpu)
     sys.exit(launch.launch_code(a, launch.resolve_folder(folder, cfg), cfg))
 
 
@@ -192,10 +215,20 @@ def code(
 def shell(
     folder: Annotated[str, typer.Argument()] = "",
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
+    tab: Annotated[
+        bool,
+        typer.Option("--tab", "-T", help="open in a new terminal tab; the current rci stays alive"),
+    ] = False,
+    node: Annotated[
+        str,
+        typer.Option("--node", help="target this compute node directly (skip squeue lookup)"),
+    ] = "",
 ) -> None:
     """Open an interactive bash on the compute node of the current allocation."""
     cfg = _cfg()
-    a = _require_alloc(cfg, require_gpu=gpu)
+    a = _resolve_alloc(cfg, node=node, require_gpu=gpu)
+    if tab:
+        sys.exit(launch.launch_shell_in_tab(a, folder, cfg))
     sys.exit(launch.launch_shell(a, launch.resolve_folder(folder, cfg), cfg))
 
 
