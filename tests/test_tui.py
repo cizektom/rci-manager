@@ -174,13 +174,42 @@ async def test_after_folder_with_no_alloc_pushes_new_instance_modal(monkeypatch)
         assert isinstance(app.screen, NewInstanceModal)
 
 
-def test_is_gpu_partition_matches_known_prefixes() -> None:
-    from rci_cli.tui import _is_gpu_partition
+def test_assemble_partition_concatenates_type_and_class() -> None:
+    from rci_cli.tui import assemble_partition
 
-    for ok in ("gpu", "gpufast", "amdgpu", "amdgpufast", "h200", "h200fast", "GPU"):
-        assert _is_gpu_partition(ok), ok
-    for bad in ("cpu", "cpufast", "long", ""):
-        assert not _is_gpu_partition(bad), bad
+    assert assemble_partition("cpu", "fast") == "cpufast"
+    assert assemble_partition("gpu", "") == "gpu"
+    assert assemble_partition("amdgpu", "long") == "amdgpulong"
+    assert assemble_partition("h200", "extralong") == "h200extralong"
+
+
+def test_validate_alloc_rejects_cpu_with_gpus() -> None:
+    from rci_cli.tui import validate_alloc
+
+    assert validate_alloc("cpu", 0) is None
+    assert validate_alloc("gpu", 1) is None
+    assert validate_alloc("amdgpu", 2) is None
+    assert validate_alloc("h200", 1) is None
+    err = validate_alloc("cpu", 1)
+    assert err is not None and "CPU" in err
+
+
+def test_partition_types_and_classes_cover_known_partitions() -> None:
+    """The 16 advertised partitions (gpufast … cpuextralong) must all be assemblable."""
+    from rci_cli.tui import PARTITION_CLASSES, PARTITION_TYPES, assemble_partition
+
+    expected = {
+        "cpufast", "cpu", "cpulong", "cpuextralong",
+        "gpufast", "gpu", "gpulong", "gpuextralong",
+        "amdgpufast", "amdgpu", "amdgpulong", "amdgpuextralong",
+        "h200fast", "h200", "h200long", "h200extralong",
+    }
+    assembled = {
+        assemble_partition(t, c_value)
+        for t in PARTITION_TYPES
+        for _, c_value in PARTITION_CLASSES
+    }
+    assert assembled == expected
 
 
 async def test_action_log_auto_clears(monkeypatch) -> None:

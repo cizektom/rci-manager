@@ -28,6 +28,7 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -104,13 +105,28 @@ class AllocParams:
         return "gpu" if self.gpus > 0 else "cpu"
 
 
-# Partition prefixes that accept ``--gres=gpu:N`` on this cluster.
-_GPU_PARTITION_PREFIXES = ("gpu", "amdgpu", "h200")
+# Allowed partition components on the RCI cluster. The full partition name is
+# ``<type><class>`` (e.g. ``gpufast``, ``cpu``, ``h200extralong``). The
+# ``(normal)`` class maps to no suffix.
+PARTITION_TYPES: tuple[str, ...] = ("cpu", "gpu", "amdgpu", "h200")
+PARTITION_CLASSES: tuple[tuple[str, str], ...] = (
+    ("fast", "fast"),
+    ("(normal)", ""),
+    ("long", "long"),
+    ("extralong", "extralong"),
+)
 
 
-def _is_gpu_partition(p: str) -> bool:
-    p = p.strip().lower()
-    return any(p.startswith(prefix) for prefix in _GPU_PARTITION_PREFIXES)
+def assemble_partition(ptype: str, pclass: str) -> str:
+    """Compose the two dropdown values into a Slurm partition name."""
+    return f"{ptype}{pclass}"
+
+
+def validate_alloc(ptype: str, gpus: int) -> str | None:
+    """Return an error message if the (type, gpus) combo is invalid, else ``None``."""
+    if gpus > 0 and ptype == "cpu":
+        return "CPU partition doesn't accept GPUs — pick gpu / amdgpu / h200."
+    return None
 
 
 class NewInstanceModal(ModalScreen[AllocParams | None]):
@@ -135,12 +151,20 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
         cpu_cores, cpu_mem, cpu_time = self.cfg.cpu_defaults
         with Container(id="modal-box"):
             yield Label("[b]New instance[/b]", id="modal-title")
-            yield Label("Partition")
-            yield Input(value=self.cfg.cpu_partition, id="partition")
-            yield Label(
-                "[dim]cpu · cpufast · gpu · gpufast · amdgpu · h200[/dim]",
-                id="partition-hint",
-            )
+            yield Label("Partition  [dim]<type><class>[/dim]")
+            with Horizontal(id="partition-row"):
+                yield Select(
+                    [(t, t) for t in PARTITION_TYPES],
+                    value="cpu",
+                    id="partition-type",
+                    allow_blank=False,
+                )
+                yield Select(
+                    list(PARTITION_CLASSES),
+                    value="fast",
+                    id="partition-class",
+                    allow_blank=False,
+                )
             yield Label("Cores")
             yield Input(value=str(cpu_cores), id="cores", type="integer")
             yield Label("GPUs  [dim](0 = CPU job)[/dim]")
@@ -157,7 +181,8 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
     @on(Input.Submitted)
     def _ok(self) -> None:
         try:
-            partition = self.query_one("#partition", Input).value.strip()
+            ptype = str(self.query_one("#partition-type", Select).value)
+            pclass = str(self.query_one("#partition-class", Select).value)
             cores = int(self.query_one("#cores", Input).value or "0")
             gpus = int(self.query_one("#gpus", Input).value or "0")
             mem_gb = int(self.query_one("#mem", Input).value or "0")
@@ -165,16 +190,13 @@ class NewInstanceModal(ModalScreen[AllocParams | None]):
         except ValueError:
             self.app.notify("Invalid number", severity="error")
             return
-        if gpus > 0 and not _is_gpu_partition(partition):
-            self.app.notify(
-                f"Partition '{partition}' doesn't accept GPUs — use gpu*, amdgpu*, or h200*.",
-                severity="error",
-                timeout=6,
-            )
+        err = validate_alloc(ptype, gpus)
+        if err is not None:
+            self.app.notify(err, severity="error", timeout=6)
             return
         self.dismiss(
             AllocParams(
-                partition=partition,
+                partition=assemble_partition(ptype, pclass),
                 cores=cores,
                 gpus=gpus,
                 mem_gb=mem_gb,
@@ -664,7 +686,9 @@ Tab.-active { color: ansi_cyan; text-style: bold; }
 /* Modals: bordered dialog, centered in the TUI viewport. */
 ConfirmModal, NewInstanceModal, FolderModal { align: center middle; }
 
-#partition-hint { color: ansi_bright_black; padding-bottom: 1; }
+#partition-row { height: auto; padding-bottom: 1; }
+#partition-row Select { width: 1fr; margin-right: 1; }
+#partition-row Select:last-child { margin-right: 0; }
 
 #modal-box {
     background: ansi_default;
