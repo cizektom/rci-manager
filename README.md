@@ -6,8 +6,8 @@ compute node, run VS Code Remote-SSH, cancel jobs, forward ports — all from
 one tool with a dashboard you can leave open.
 
 ```sh
-git clone https://github.com/cizektom/rci-cli.git ~/rci-cli
-uv tool install --python 3.11 ~/rci-cli   # or: pipx install ~/rci-cli
+git clone https://github.com/cizektom/rci-manager.git ~/rci-manager
+uv tool install --python 3.11 ~/rci-manager   # or: pipx install ~/rci-manager
 rci         # first run pops a setup wizard
 ```
 
@@ -249,8 +249,8 @@ so the contract surface is small and well-tested.
 ## Development
 
 ```sh
-git clone https://github.com/cizektom/rci-cli.git ~/rci-cli
-cd ~/rci-cli
+git clone https://github.com/cizektom/rci-manager.git ~/rci-manager
+cd ~/rci-manager
 python3.11 -m venv .venv && . .venv/bin/activate
 pip install -e ".[test]"
 rci --help
@@ -266,7 +266,7 @@ python -m rci_cli --help
 After source edits, refresh the installed binary:
 
 ```sh
-uv tool install --reinstall --python 3.11 ~/rci-cli
+uv tool install --reinstall --python 3.11 ~/rci-manager
 ```
 
 ### Test layout

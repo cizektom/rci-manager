@@ -26,7 +26,7 @@ test = [
 ]
 
 [project.urls]
-Repository = "https://github.com/cizektom/rci-cli"
+Repository = "https://github.com/cizektom/rci-manager"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
