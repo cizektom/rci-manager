@@ -45,10 +45,15 @@ left alone.
        HostName login3.rci.cvut.cz
        User <your-username>
 
-   Host n* g*
+   Host n0* n1* n2* n3* n4* n5* n6* n7* n8* n9* g0* g1* g2* g3* g4* g5* g6* g7* g8* g9*
        ProxyJump rci
        User <your-username>
    ```
+
+   The digit after `n`/`g` is deliberate: a bare `Host n* g*` would also
+   match `github.com`, `gitlab.com`, `ghcr.io`, `nginx.*`, etc. and try to
+   `ProxyJump rci` through them — breaking `git push` whenever the cluster
+   isn't reachable.
 
    For other clusters, point `Host` at your login node and add `ProxyJump`
    entries that match your compute-node naming.
