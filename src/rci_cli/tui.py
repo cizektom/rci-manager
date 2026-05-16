@@ -9,7 +9,6 @@ over to ssh for shell-in / claude attach, then re-render on return.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -106,7 +105,14 @@ class ConfirmModal(ModalScreen[bool]):
 
 @dataclass(frozen=True)
 class AllocParams:
-    """Result of :class:`NewInstanceModal`. Same shape for CPU and GPU jobs."""
+    """Result of :class:`NewInstanceModal`. Same shape for CPU and GPU jobs.
+
+    The agent-specific fields (``permission_mode``, ``spawn_mode``, ``capacity``)
+    are populated downstream when the Agent flow merges its
+    :class:`AgentOptions` into the resources params before submission. Other
+    flows leave them at their defaults and the agent launcher (irrelevant
+    there) falls back to ``cfg.agent_*``.
+    """
 
     partition: str
     cores: int
@@ -114,10 +120,40 @@ class AllocParams:
     mem_gb: int
     walltime: str
     job_name: str = ""
+    permission_mode: str = ""
+    spawn_mode: str = ""
+    capacity: int = 0
 
     @property
     def kind(self) -> str:
         return "gpu" if self.gpus > 0 else "cpu"
+
+
+@dataclass(frozen=True)
+class AgentOptions:
+    """Result of :class:`AgentOptionsModal` — the ``claude remote-control`` flags.
+
+    Merged into :class:`AllocParams` by the panel before submission so the
+    Slurm and claude sides flow through the same plumbing as every other
+    submit path.
+    """
+
+    permission_mode: str
+    spawn_mode: str
+    capacity: int
+
+
+# ``claude remote-control --permission-mode`` choices.
+PERMISSION_MODES: tuple[str, ...] = (
+    "default",
+    "acceptEdits",
+    "auto",
+    "bypassPermissions",
+    "dontAsk",
+    "plan",
+)
+# ``claude remote-control --spawn`` choices.
+SPAWN_MODES: tuple[str, ...] = ("same-dir", "worktree", "session")
 
 
 # Walltime is a Select (not an Input) so printable keys like ``q`` fall through
@@ -157,32 +193,11 @@ def validate_alloc(ptype: str, gpus: int, gpu_types: tuple[str, ...]) -> str | N
     return None
 
 
-_JOBID_PATTERNS = (
-    re.compile(r"job allocation (\d+)"),         # "Granted/Pending job allocation 1234567"
-    re.compile(r"job (\d+) has been allocated"), # "salloc: job 1234567 has been allocated resources"
-    re.compile(r"Submitted batch job (\d+)"),    # belt and suspenders — sbatch-style
-)
-
-
-def parse_jobid_from_salloc(output: str) -> str | None:
-    """Best-effort jobid extraction from ``salloc --no-shell`` stdout/stderr.
-
-    Slurm formats vary by site config; try a few known shapes before giving up.
-    """
-    for pat in _JOBID_PATTERNS:
-        m = pat.search(output)
-        if m:
-            return m.group(1)
-    return None
-
-
-def last_meaningful_line(output: str) -> str:
-    """Last non-empty line — usually the most informative on salloc errors."""
-    for line in reversed(output.strip().splitlines()):
-        line = line.strip()
-        if line:
-            return line
-    return "(no output)"
+# Re-exported for callers that still import from ``rci_cli.tui``. The actual
+# definitions live in :mod:`rci_cli.slurm` so the non-TUI CLI can use them
+# without importing Textual.
+parse_jobid_from_salloc = slurm.parse_jobid_from_salloc
+last_meaningful_line = slurm.last_meaningful_line
 
 
 class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
@@ -451,6 +466,114 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         event.stop()
 
 
+class AgentOptionsModal(ModalScreen["AgentOptions | str | None"]):
+    """Configure the ``claude remote-control`` flags before picking resources.
+
+    Step 2 of the Agent flow (folder → **agent options** → resources →
+    submit). Keeping the claude knobs in a dedicated modal means the
+    resources step looks identical for every flow.
+
+    Dismiss values:
+      - :class:`AgentOptions` → user clicked Submit
+      - ``None`` → user clicked the explicit Cancel button (abort)
+      - the string ``"back"`` → user pressed ``q``/``escape`` while
+        ``allow_back=True`` so the caller can re-open the folder picker.
+    """
+
+    AUTO_FOCUS: ClassVar[str] = ""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        # ``priority=True`` so q/escape always backs out even from inside
+        # the capacity Input — mirrors NewInstanceModal's binding.
+        Binding("escape,q", "cancel", "Cancel", show=False, priority=True),
+        Binding("enter", "submit", "Submit", show=False),
+    ]
+
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        allow_back: bool = False,
+        prefill: AgentOptions | None = None,
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.allow_back = allow_back
+        # Prefill takes priority when stepping back from the resources modal
+        # — we want the user's prior choices visible. Otherwise fall back to
+        # the cfg-default values.
+        self._init_permission = (
+            prefill.permission_mode if prefill else cfg.agent_permission_mode
+        )
+        self._init_spawn = prefill.spawn_mode if prefill else cfg.agent_spawn_mode
+        self._init_capacity = str(prefill.capacity if prefill else cfg.agent_capacity)
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="modal-box", can_focus=False):
+            yield Label("[b]Agent options[/b]", id="modal-title")
+            yield Label("Permission mode")
+            yield Select(
+                [(m, m) for m in PERMISSION_MODES],
+                value=self._init_permission,
+                id="agent-permission-mode",
+                allow_blank=False,
+            )
+            yield Label("Spawn")
+            yield Select(
+                [(m, m) for m in SPAWN_MODES],
+                value=self._init_spawn,
+                id="agent-spawn-mode",
+                allow_blank=False,
+            )
+            yield Label("Capacity")
+            yield Input(
+                value=self._init_capacity,
+                id="agent-capacity",
+                type="integer",
+            )
+            with Horizontal(id="modal-buttons"):
+                yield Button("Next", id="ok")
+                yield Button("Cancel", id="cancel")
+
+    @on(Input.Submitted)
+    def _advance_focus(self) -> None:
+        self.focus_next()
+
+    @on(Button.Pressed, "#ok")
+    def _ok(self) -> None:
+        self._do_submit()
+
+    def action_submit(self) -> None:
+        self._do_submit()
+
+    def _do_submit(self) -> None:
+        permission_mode = str(self.query_one("#agent-permission-mode", Select).value)
+        spawn_mode = str(self.query_one("#agent-spawn-mode", Select).value)
+        try:
+            capacity = int(self.query_one("#agent-capacity", Input).value or "0")
+        except ValueError:
+            self.app.notify("Invalid capacity", severity="error")
+            return
+        # 0/blank → cfg default rather than failing — claude rejects 0
+        # outright, and the user almost certainly meant "leave it alone".
+        if capacity <= 0:
+            capacity = self.cfg.agent_capacity
+        self.dismiss(
+            AgentOptions(
+                permission_mode=permission_mode,
+                spawn_mode=spawn_mode,
+                capacity=capacity,
+            )
+        )
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss("back" if self.allow_back else None)
+
+
 class FolderModal(ModalScreen[str | None]):
     """Quick prompt: which folder on the compute node? Empty string = home."""
 
@@ -666,6 +789,7 @@ class JobsPanel(Container):
         Binding("s", "new_instance", "Submit"),
         Binding("c", "shell_into", "Connect"),
         Binding("e", "editor_into", "Editor"),
+        Binding("a", "agent_into", "Agent"),
         Binding("r", "refresh", "Refresh"),
         Binding("k", "cancel_job", "Kill"),
     ]
@@ -675,6 +799,11 @@ class JobsPanel(Container):
         self._rows: list[JobRow] = []
         self._last_action: str = ""
         self._action_clear_timer = None  # type: ignore[var-annotated]
+        # Carries the AgentOptions across the agent flow's 3 modal hops so
+        # step-back from the resources modal can re-open the options modal
+        # with the user's prior choices intact. Cleared after submission /
+        # outright cancel.
+        self._pending_agent_opts: AgentOptions | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -862,6 +991,11 @@ class JobsPanel(Container):
     def action_editor_into(self) -> None:
         self._pick_folder_then("editor")
 
+    def action_agent_into(self) -> None:
+        # Agent always spawns a new alloc, but we still ask for the working
+        # folder first so ``claude remote-control`` starts in the right place.
+        self._pick_folder_then("agent")
+
     def action_shell_frontend(self) -> None:
         """Open an interactive ssh session to the login host (``cfg.ssh_host``).
 
@@ -887,6 +1021,18 @@ class JobsPanel(Container):
         if folder is None:
             return  # user cancelled the folder prompt
         cfg = load()
+        # Agent gets its own 3-step flow: folder → agent options → resources.
+        # Always spawns a fresh ``agent-N`` (no reuse, no row-state check).
+        if kind == "agent":
+            self.app.push_screen(
+                AgentOptionsModal(
+                    cfg,
+                    allow_back=True,
+                    prefill=self._pending_agent_opts,
+                ),
+                lambda result: self._after_agent_options(folder, result),
+            )
+            return
         # Block early when the highlighted row exists but isn't connectable
         # (pending) — silently falling through to the New Instance modal made
         # it look like the action was ignored.
@@ -922,6 +1068,11 @@ class JobsPanel(Container):
         n = slurm.lowest_unused_index((r.name for r in self._rows), cfg.dev_job_name)
         return f"{cfg.dev_job_name}-{n}"
 
+    def _suggest_agent_name(self, cfg: Config) -> str:
+        """Same gap-reuse logic as ``_suggest_dev_name``, but for the agent pool."""
+        n = slurm.lowest_unused_index((r.name for r in self._rows), cfg.agent_job_name)
+        return f"{cfg.agent_job_name}-{n}"
+
     def _after_new_instance(
         self, kind: str, folder: str, result: "AllocParams | str | None"
     ) -> None:
@@ -937,6 +1088,61 @@ class JobsPanel(Container):
         assert isinstance(result, AllocParams)
         self._submit_then_attach(kind, result, folder)
 
+    # ----- agent flow (folder → agent options → resources → submit) ----------
+
+    def _after_agent_options(
+        self, folder: str, result: "AgentOptions | str | None"
+    ) -> None:
+        """Step 2 callback: route to resources modal or step back to folder."""
+        if result is None:
+            # Cancel: drop the whole flow and forget any cached options so
+            # the next start opens fresh.
+            self._pending_agent_opts = None
+            return
+        if result == "back":
+            self._pick_folder_then("agent")
+            return
+        assert isinstance(result, AgentOptions)
+        self._pending_agent_opts = result
+        cfg = load()
+        self.app.push_screen(
+            NewInstanceModal(
+                cfg,
+                allow_back=True,
+                default_name=self._suggest_agent_name(cfg),
+            ),
+            lambda r: self._after_agent_resources(folder, result, r),
+        )
+
+    def _after_agent_resources(
+        self,
+        folder: str,
+        opts: AgentOptions,
+        result: "AllocParams | str | None",
+    ) -> None:
+        """Step 3 callback: merge agent opts into AllocParams and submit, or
+        step back to the agent-options modal with prefill intact."""
+        if result is None:
+            self._pending_agent_opts = None
+            return
+        if result == "back":
+            cfg = load()
+            self.app.push_screen(
+                AgentOptionsModal(cfg, allow_back=True, prefill=opts),
+                lambda r: self._after_agent_options(folder, r),
+            )
+            return
+        assert isinstance(result, AllocParams)
+        from dataclasses import replace as _replace
+        merged = _replace(
+            result,
+            permission_mode=opts.permission_mode,
+            spawn_mode=opts.spawn_mode,
+            capacity=opts.capacity,
+        )
+        self._pending_agent_opts = None
+        self._submit_then_attach("agent", merged, folder)
+
     def _alloc_from_selected_row(self) -> alloc_mod.Allocation | None:
         """Promote the highlighted row to an Allocation if it's running on a node."""
         row = self._selected_row()
@@ -951,8 +1157,15 @@ class JobsPanel(Container):
         return alloc_mod.Allocation(node=row.node, jobid=row.jobid)
 
     def _attach_to(
-        self, kind: str, alloc: alloc_mod.Allocation, folder_arg: str = ""
+        self,
+        kind: str,
+        alloc: alloc_mod.Allocation,
+        folder_arg: str = "",
+        params: AllocParams | None = None,
     ) -> None:
+        # The agent flow launches detached straight from the worker thread
+        # (no UI suspend, no terminal handover) so it never reaches here —
+        # only shell / editor do.
         cfg = load()
         folder_abs = launch.resolve_folder(folder_arg, cfg)
         if kind == "editor":
@@ -1023,8 +1236,40 @@ class JobsPanel(Container):
                 f"job {jobid} didn't get a node assigned within 30s",
             )
             return
+        if kind == "agent":
+            # Detached launch — stays in this worker thread (the ssh call
+            # returns as soon as the bg cmd is posted) so the UI never
+            # suspends. Just notify and refresh on the way out.
+            assert params is not None
+            folder_abs = launch.resolve_folder(folder, cfg)
+            name = params.job_name or cfg.agent_job_name
+            try:
+                launch.launch_agent(
+                    alloc_mod.Allocation(node=node, jobid=jobid),
+                    folder_abs,
+                    cfg,
+                    name=name,
+                    permission_mode=params.permission_mode or cfg.agent_permission_mode,
+                    spawn_mode=params.spawn_mode or cfg.agent_spawn_mode,
+                    capacity=params.capacity or cfg.agent_capacity,
+                )
+            except Exception as e:  # noqa: BLE001
+                self.app.call_from_thread(
+                    self._notify_error, f"agent launch failed: {e}"
+                )
+                return
+            self.app.call_from_thread(
+                self._notify_action,
+                f"agent '{name}' launched on {node} — pair from claude.ai/code",
+            )
+            self.refresh_jobs()
+            return
         self.app.call_from_thread(
-            self._attach_to, kind, alloc_mod.Allocation(node=node, jobid=jobid), folder
+            self._attach_to,
+            kind,
+            alloc_mod.Allocation(node=node, jobid=jobid),
+            folder,
+            params,
         )
 
     # ----- new instance only (no auto-attach) -----
@@ -1152,7 +1397,7 @@ FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
    dashboard underneath shows through at full brightness around the modal
    box. The modal-box itself is opaque (default bg + cyan border) so its
    content stays crisp; only the area outside the box is "see-through". */
-ConfirmModal, NewInstanceModal, FolderModal, SetupModal {
+ConfirmModal, NewInstanceModal, AgentOptionsModal, FolderModal, SetupModal {
     align: center middle;
     background: transparent;
 }

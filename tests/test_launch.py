@@ -92,3 +92,61 @@ def test_launch_editor_uses_vscode_remote_uri(monkeypatch, cfg: Config) -> None:
     argv = captured["local_argv"]
     # Either ["code", "--folder-uri", URI] or ["cmd.exe", "/c", "code", "--folder-uri", URI]
     assert any("vscode-remote://ssh-remote+n01/home/cizekto2/sam2rl" in a for a in argv)
+
+
+def test_launch_agent_runs_detached_with_nohup(monkeypatch, cfg: Config) -> None:
+    """``launch_agent`` must background claude remote-control so the TUI / CLI
+    returns immediately. Pattern: ``nohup … >>log 2>&1 </dev/null & disown``,
+    no tty, no ``exec`` (which would replace the shell instead of
+    backgrounding)."""
+    captured = _patch_ssh(monkeypatch)
+    rc = launch.launch_agent(
+        Allocation(node="g05", jobid="5555"),
+        "/home/cizekto2/sam2rl",
+        cfg,
+        name="agent-2",
+        permission_mode="bypassPermissions",
+        spawn_mode="worktree",
+        capacity=16,
+    )
+    assert rc == 0
+    assert captured["host"] == "g05"
+    assert captured["tty"] is False  # detached — no terminal handover
+    cmd = captured["cmd"]
+    assert "cd '/home/cizekto2/sam2rl'" in cmd
+    assert "exec claude" not in cmd  # would replace the shell, blocking ssh
+    assert "nohup claude remote-control" in cmd
+    assert "& disown" in cmd
+    assert "</dev/null" in cmd
+    assert ">>$HOME/.rci/agent-logs/agent-2.log 2>&1" in cmd
+    assert "mkdir -p $HOME/.rci/agent-logs" in cmd
+    # All four claude flags still flow through verbatim.
+    assert "--name agent-2" in cmd
+    assert "--permission-mode bypassPermissions" in cmd
+    assert "--spawn worktree" in cmd
+    assert "--capacity 16" in cmd
+
+
+def test_launch_agent_shell_quotes_dynamic_strings(monkeypatch, cfg: Config) -> None:
+    """Free-text ``name`` must be shell-escaped — a name with a space can't
+    spill into the next flag and a name with a quote can't terminate it."""
+    captured = _patch_ssh(monkeypatch)
+    launch.launch_agent(
+        Allocation(node="n01", jobid="1"),
+        "/tmp",
+        cfg,
+        name="hello world",
+        permission_mode="default",
+        spawn_mode="same-dir",
+        capacity=32,
+    )
+    # ``shlex.quote('hello world')`` → ``'hello world'`` (single-quoted).
+    assert "--name 'hello world'" in captured["cmd"]
+
+
+def test_agent_log_path_namespaces_per_name() -> None:
+    """Each agent gets its own log file under ``~/.rci/agent-logs/``."""
+    assert launch.agent_log_path("agent-1") == "$HOME/.rci/agent-logs/agent-1.log"
+    # Spaces in names get shell-quoted; ``.log`` lives outside the quote and
+    # the shell concatenates them into one filename.
+    assert launch.agent_log_path("my run") == "$HOME/.rci/agent-logs/'my run'.log"

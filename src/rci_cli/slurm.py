@@ -6,6 +6,7 @@ plain Python structures so callers (CLI/TUI) can render however they want.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -190,3 +191,31 @@ def cancel_jobids(cfg: Config, jobids: list[str]) -> int:
 def list_jobs_brief(cfg: Config) -> str:
     cmd = f"squeue -u {cfg.user} -h -o '%.10i %.9P %.10j %.8T'"
     return ssh.capture(cfg.ssh_host, cmd, check=False)
+
+
+_JOBID_PATTERNS = (
+    re.compile(r"job allocation (\d+)"),         # "Granted/Pending job allocation 1234567"
+    re.compile(r"job (\d+) has been allocated"), # "salloc: job 1234567 has been allocated resources"
+    re.compile(r"Submitted batch job (\d+)"),    # belt and suspenders — sbatch-style
+)
+
+
+def parse_jobid_from_salloc(output: str) -> str | None:
+    """Best-effort jobid extraction from ``salloc --no-shell`` stdout/stderr.
+
+    Slurm formats vary by site config; try a few known shapes before giving up.
+    """
+    for pat in _JOBID_PATTERNS:
+        m = pat.search(output)
+        if m:
+            return m.group(1)
+    return None
+
+
+def last_meaningful_line(output: str) -> str:
+    """Last non-empty line — usually the most informative on salloc errors."""
+    for line in reversed(output.strip().splitlines()):
+        line = line.strip()
+        if line:
+            return line
+    return "(no output)"

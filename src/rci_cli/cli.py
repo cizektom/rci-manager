@@ -173,10 +173,12 @@ def cancel_all() -> None:
 
 @app.command("cancel-dev")
 def cancel_dev() -> None:
-    """Cancel all rci-cli managed allocations (``dev*`` + ``editor``)."""
+    """Cancel all rci-cli managed allocations (``dev*`` + ``editor`` + ``agent*``)."""
     cfg = _cfg()
-    jobs = slurm.jobs_by_prefix(cfg, cfg.dev_job_name) + slurm.jobs_by_prefix(
-        cfg, cfg.editor_job_name
+    jobs = (
+        slurm.jobs_by_prefix(cfg, cfg.dev_job_name)
+        + slurm.jobs_by_prefix(cfg, cfg.editor_job_name)
+        + slurm.jobs_by_prefix(cfg, cfg.agent_job_name)
     )
     if not jobs:
         rprint("No rci-managed allocations to cancel.")
@@ -205,6 +207,79 @@ def editor(
     cfg = _cfg()
     a = _require_alloc(cfg, require_gpu=gpu, spawn_name=cfg.editor_job_name)
     sys.exit(launch.launch_editor(a, launch.resolve_folder(folder, cfg), cfg))
+
+
+@app.command()
+def agent(
+    folder: Annotated[str, typer.Argument()] = "",
+    gpu_alloc: Annotated[bool, typer.Option("--gpu", help="request a GPU allocation")] = False,
+    cores: Annotated[int, typer.Option("-c", "--cores")] = -1,
+    mem: Annotated[int, typer.Option("-m", "--mem", help="memory in GB")] = -1,
+    time_: Annotated[str, typer.Option("-t", "--time", help="walltime, e.g. 4:00:00")] = "",
+    gpus_n: Annotated[int, typer.Option("-g", "--gpus")] = -1,
+    name: Annotated[str, typer.Option("--name", help="claude session name (defaults to job name)")] = "",
+    permission_mode: Annotated[
+        str, typer.Option("--permission-mode", help="acceptEdits|auto|bypassPermissions|default|dontAsk|plan")
+    ] = "",
+    spawn: Annotated[str, typer.Option("--spawn", help="same-dir|worktree|session")] = "",
+    capacity: Annotated[int, typer.Option("--capacity", help="max concurrent sessions")] = -1,
+) -> None:
+    """Spawn a fresh ``agent-N`` allocation and run ``claude remote-control`` on it.
+
+    Always submits a new allocation — each ``claude remote-control`` run is an
+    independent server you pair with from claude.ai/code or the mobile app.
+    Defaults for ``--permission-mode`` / ``--spawn`` / ``--capacity`` come from
+    ``agent_*`` fields in ``~/.config/rci-cli/config.toml``.
+    """
+    import time as _time
+
+    cfg = _cfg()
+    job_name = slurm.next_indexed_name(cfg, cfg.agent_job_name)
+    if gpu_alloc:
+        d_g, d_c, d_m, d_t = cfg.gpu_defaults
+        out = slurm.submit_gpu(
+            cfg,
+            gpus_n if gpus_n > 0 else d_g,
+            cores if cores > 0 else d_c,
+            mem if mem > 0 else d_m,
+            time_ or d_t,
+            job_name=job_name,
+        )
+    else:
+        d_c, d_m, d_t = cfg.cpu_defaults
+        out = slurm.submit_cpu(
+            cfg,
+            cores if cores > 0 else d_c,
+            mem if mem > 0 else d_m,
+            time_ or d_t,
+            job_name=job_name,
+        )
+    typer.echo(out)
+    jobid = slurm.parse_jobid_from_salloc(out)
+    if jobid is None:
+        rprint(f"[red]submit failed:[/red] {slurm.last_meaningful_line(out)}")
+        raise typer.Exit(code=1)
+    # Poll for node assignment — cpufast/gpufast usually schedule in seconds.
+    deadline = _time.time() + 30.0
+    node = ""
+    while _time.time() < deadline:
+        node = slurm.node_for(cfg, jobid)
+        if node:
+            break
+        _time.sleep(1.0)
+    if not node:
+        rprint(f"[red]job {jobid} didn't get a node assigned within 30s[/red]")
+        raise typer.Exit(code=1)
+    rc = launch.launch_agent(
+        alloc_mod.Allocation(node=node, jobid=jobid),
+        launch.resolve_folder(folder, cfg),
+        cfg,
+        name=name or job_name,
+        permission_mode=permission_mode or cfg.agent_permission_mode,
+        spawn_mode=spawn or cfg.agent_spawn_mode,
+        capacity=capacity if capacity > 0 else cfg.agent_capacity,
+    )
+    raise typer.Exit(code=rc)
 
 
 @app.command()

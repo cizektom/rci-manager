@@ -27,6 +27,10 @@ def test_cluster_defaults_match_rci() -> None:
     assert c.gpu_partition == "gpufast"
     assert c.dev_job_name == "dev"
     assert c.editor_job_name == "editor"
+    assert c.agent_job_name == "agent"
+    assert c.agent_permission_mode == "default"
+    assert c.agent_spawn_mode == "same-dir"
+    assert c.agent_capacity == 32
     assert c.cpu_defaults == (2, 4, "1:00:00")
     assert c.gpu_defaults == (1, 2, 8, "1:00:00")
     assert c.partition_types == ("cpu", "gpu", "amdgpu", "h200")

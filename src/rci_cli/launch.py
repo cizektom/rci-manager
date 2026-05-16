@@ -13,6 +13,7 @@ inside the spawned bash with ``tmux`` / ``screen`` if you need survival.
 from __future__ import annotations
 
 import os
+import shlex
 
 from . import ssh
 from .alloc import Allocation
@@ -52,6 +53,61 @@ def launch_shell(alloc: Allocation, folder: str, cfg: Config) -> int:
     print(f"→ {alloc.node} (job {alloc.jobid}): opening shell in {folder}")
     cmd = f"{_remote_preamble(folder)} exec bash -i"
     return ssh.run(alloc.node, cmd, tty=True, check=False)
+
+
+AGENT_LOG_DIR = "$HOME/.rci/agent-logs"
+
+
+def agent_log_path(name: str) -> str:
+    """Compute-node path of the log for an agent named ``name``.
+
+    String is shell-safe (the dynamic part is shlex-quoted) but contains
+    ``$HOME`` — interpret it by running it through ssh, not by os.path.
+    """
+    return f"{AGENT_LOG_DIR}/{shlex.quote(name)}.log"
+
+
+def launch_agent(
+    alloc: Allocation,
+    folder: str,
+    cfg: Config,
+    *,
+    name: str,
+    permission_mode: str,
+    spawn_mode: str,
+    capacity: int,
+) -> int:
+    """Start ``claude remote-control`` detached on the compute node.
+
+    The launch returns as soon as ssh posts the background command — the
+    remote process keeps running via ``nohup … & disown`` and survives the
+    ssh disconnect, so the CLI / TUI returns to the foreground immediately.
+    Pair the session from claude.ai/code or the mobile app (no terminal
+    output needed once you're signed in there).
+
+    Stdout/stderr append to ``~/.rci/agent-logs/<name>.log`` on the
+    compute node — peek there if you ever need to see startup messages.
+    """
+    safe_name = shlex.quote(name)
+    log_path = agent_log_path(name)
+    flags = (
+        f"--name {safe_name} "
+        f"--permission-mode {shlex.quote(permission_mode)} "
+        f"--spawn {shlex.quote(spawn_mode)} "
+        f"--capacity {int(capacity)}"
+    )
+    # The remote shell must: cd / source venv / set PATH (preamble),
+    # ensure the log dir exists, then background claude with stdio
+    # detached from ssh so ssh disconnects right away.
+    cmd = (
+        f"{_remote_preamble(folder)}; "
+        f"mkdir -p {AGENT_LOG_DIR} && "
+        f"nohup claude remote-control {flags} "
+        f">>{log_path} 2>&1 </dev/null & disown"
+    )
+    print(f"→ {alloc.node} (job {alloc.jobid}): agent '{name}' launched in background")
+    print(f"  log: {alloc.node}:{log_path}")
+    return ssh.run(alloc.node, cmd, tty=False, check=False)
 
 
 def launch_editor(alloc: Allocation, folder: str, cfg: Config) -> int:

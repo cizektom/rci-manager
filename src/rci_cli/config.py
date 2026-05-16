@@ -42,6 +42,16 @@ class Config:
     # editor allocation at a time (subsequent Editor presses attach to it),
     # so no numbering suffix is needed.
     editor_job_name: str = "editor"
+    # Name prefix for jobs spawned from the Agent flow (``rci agent`` / TUI ``a``).
+    # Always spawns a fresh ``<agent_job_name>-N`` — no reuse, since each press
+    # starts a new ``claude remote-control`` server you'd pair with from mobile.
+    agent_job_name: str = "agent"
+    # Defaults for ``claude remote-control`` flags, overridable per-invocation
+    # from CLI flags or the TUI's Agent options. See ``claude remote-control
+    # --help`` for the accepted values.
+    agent_permission_mode: str = "default"
+    agent_spawn_mode: str = "same-dir"
+    agent_capacity: int = 32
     # Conservative debug defaults — schedule fast, don't burn quota if you forget one.
     # Override per-allocation with --cores/--mem/--time or globally in ~/.config/rci-cli/config.toml.
     cpu_defaults: tuple[int, int, str] = (2, 4, "1:00:00")  # cores, memGB, walltime

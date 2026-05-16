@@ -1087,3 +1087,238 @@ async def test_dashboard_skips_setup_when_already_configured(monkeypatch) -> Non
         assert not isinstance(app.screen, SetupModal)
         # Dashboard panel is mounted.
         assert app.query_one(JobsPanel) is not None
+
+
+# ── Agent flow ──────────────────────────────────────────────────────────────
+
+
+async def test_suggest_agent_name_uses_cached_rows_with_gap_reuse(monkeypatch) -> None:
+    """``_suggest_agent_name`` mirrors ``_suggest_dev_name`` but for the agent
+    pool — separate counter from dev-N."""
+    from rci_cli.config import Config
+    from rci_cli.tui import JobRow
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        cfg = Config()
+        # Mix of dev and agent jobs in the cache. dev-1 must not bump the
+        # agent counter; agent-1 is free, agent-2 is taken.
+        panel._rows = [
+            JobRow(
+                jobid="111", partition="cpufast", name="dev-1", state="RUNNING",
+                time="0:05", limit="1:00:00", cpus="2", mem="4G", gres="N/A", node="n01",
+            ),
+            JobRow(
+                jobid="222", partition="cpufast", name="agent-2", state="RUNNING",
+                time="0:01", limit="1:00:00", cpus="2", mem="4G", gres="N/A", node="n02",
+            ),
+        ]
+        assert panel._suggest_agent_name(cfg) == "agent-1"
+        panel._rows = []
+        assert panel._suggest_agent_name(cfg) == "agent-1"
+
+
+async def test_agent_flow_opens_agent_options_modal_first(monkeypatch, tmp_path) -> None:
+    """Pressing 'a' (Agent) opens ``AgentOptionsModal`` before the resources
+    modal — that's the new 3-step ordering."""
+    from textual.widgets import Input, Select
+
+    from rci_cli.tui import AgentOptionsModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._after_folder("agent", "")
+        await pilot.pause()
+        assert isinstance(app.screen, AgentOptionsModal)
+        scr = app.screen
+        # Prefilled from cfg defaults.
+        assert scr.query_one("#agent-permission-mode", Select).value == "default"
+        assert scr.query_one("#agent-spawn-mode", Select).value == "same-dir"
+        assert scr.query_one("#agent-capacity", Input).value == "32"
+
+
+async def test_agent_options_modal_returns_options(monkeypatch, tmp_path) -> None:
+    """Submitting the agent-options modal returns an :class:`AgentOptions`
+    with the user's choices."""
+    from textual.widgets import Input, Select
+
+    from rci_cli.config import Config
+    from rci_cli.tui import AgentOptions, AgentOptionsModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: dict[str, AgentOptions | None] = {"opts": None}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            AgentOptionsModal(Config()),
+            lambda o: captured.update(opts=o),
+        )
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#agent-permission-mode", Select).value = "bypassPermissions"
+        scr.query_one("#agent-spawn-mode", Select).value = "worktree"
+        scr.query_one("#agent-capacity", Input).value = "8"
+        scr._do_submit()
+        await pilot.pause()
+
+    o = captured["opts"]
+    assert o is not None
+    assert o.permission_mode == "bypassPermissions"
+    assert o.spawn_mode == "worktree"
+    assert o.capacity == 8
+
+
+async def test_agent_options_modal_blank_capacity_falls_back_to_cfg(
+    monkeypatch, tmp_path
+) -> None:
+    """Blank/0 capacity ⇒ restore ``cfg.agent_capacity`` rather than sending
+    0 to claude."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import AgentOptions, AgentOptionsModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: dict[str, AgentOptions | None] = {"opts": None}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            AgentOptionsModal(Config()),
+            lambda o: captured.update(opts=o),
+        )
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#agent-capacity", Input).value = ""
+        scr._do_submit()
+        await pilot.pause()
+
+    assert captured["opts"].capacity == 32  # cfg.agent_capacity default
+
+
+async def test_agent_options_step_advances_to_resources_modal(
+    monkeypatch, tmp_path
+) -> None:
+    """After AgentOptionsModal submits, the resources modal opens with the
+    suggested ``agent-N`` name and no agent fields in it."""
+    from textual.css.query import NoMatches
+    from textual.widgets import Input, Select
+
+    from rci_cli.tui import AgentOptions, AgentOptionsModal, NewInstanceModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._after_folder("agent", "")
+        await pilot.pause()
+        assert isinstance(app.screen, AgentOptionsModal)
+        scr = app.screen
+        scr.query_one("#agent-permission-mode", Select).value = "bypassPermissions"
+        scr.query_one("#agent-capacity", Input).value = "16"
+        scr._do_submit()
+        await pilot.pause()
+        # Next screen is the resources modal — agent fields are absent here.
+        assert isinstance(app.screen, NewInstanceModal)
+        res = app.screen
+        assert res.query_one("#job-name", Input).value == "agent-1"
+        import pytest
+        with pytest.raises(NoMatches):
+            res.query_one("#agent-permission-mode")
+        # The panel cached the AgentOptions so step-back can re-prefill them.
+        assert panel._pending_agent_opts is not None
+        assert panel._pending_agent_opts.permission_mode == "bypassPermissions"
+        assert panel._pending_agent_opts.capacity == 16
+
+
+async def test_agent_options_modal_back_replays_folder_picker(
+    monkeypatch, tmp_path
+) -> None:
+    """q/escape on the agent-options modal (allow_back=True) re-opens the
+    folder picker instead of dropping the flow."""
+    from rci_cli.tui import AgentOptionsModal, FolderModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._after_folder("agent", "")
+        await pilot.pause()
+        assert isinstance(app.screen, AgentOptionsModal)
+        app.screen.dismiss("back")
+        await pilot.pause()
+        assert isinstance(app.screen, FolderModal)
+
+
+async def test_agent_options_modal_prefills_from_pending_opts(
+    monkeypatch, tmp_path
+) -> None:
+    """If the panel has cached AgentOptions (user stepped back from
+    resources), the next AgentOptionsModal pre-fills with them."""
+    from textual.widgets import Input, Select
+
+    from rci_cli.config import Config
+    from rci_cli.tui import AgentOptions, AgentOptionsModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._pending_agent_opts = AgentOptions(
+            permission_mode="bypassPermissions",
+            spawn_mode="worktree",
+            capacity=8,
+        )
+        panel._after_folder("agent", "")
+        await pilot.pause()
+        assert isinstance(app.screen, AgentOptionsModal)
+        scr = app.screen
+        assert scr.query_one("#agent-permission-mode", Select).value == "bypassPermissions"
+        assert scr.query_one("#agent-spawn-mode", Select).value == "worktree"
+        assert scr.query_one("#agent-capacity", Input).value == "8"
+
+
+async def test_agent_kind_bypasses_pending_row_guard(monkeypatch, tmp_path) -> None:
+    """Agent always creates a new alloc — the pending-row guard that blocks
+    shell/editor must not fire for the agent flow."""
+    from rci_cli.tui import AgentOptionsModal, JobRow
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        # Even with a pending row highlighted, agent flow must proceed.
+        panel._rows = [
+            JobRow(
+                jobid="999", partition="cpufast", name="dev-1", state="PENDING",
+                time="0:00", limit="1:00:00", cpus="2", mem="4G", gres="N/A",
+                node="(Resources)",
+            )
+        ]
+        panel._after_folder("agent", "")
+        await pilot.pause()
+        assert isinstance(app.screen, AgentOptionsModal)

@@ -78,15 +78,16 @@ fall back to `--help`.
 | `rci gpu`                            | submit a GPU `dev-gpu` allocation — `-g -c -m -t`  |
 | `rci cancel JOBID`                   | cancel a single job (confirms first if running)    |
 | `rci cancel-all`                     | cancel ALL your jobs (confirms)                    |
-| `rci cancel-dev`                     | cancel all rci-managed jobs (`dev*` + `editor`)    |
+| `rci cancel-dev`                     | cancel all rci-managed jobs (`dev*` + `editor` + `agent*`) |
 | `rci shell  [DIR] [--gpu]`           | interactive bash on the compute node               |
 | `rci editor [DIR] [--gpu]`           | VS Code Remote-SSH (WSL → Windows `code.cmd`)      |
+| `rci agent  [DIR] [--gpu] [...]`     | spawn `agent-N` + run `claude remote-control`      |
 | `rci alloc  [--gpu]`                 | prints `<node> <jobid>` — scripting-friendly       |
 | `rci port LOCAL[:REMOTE]`            | local → compute-node port forward (Ctrl-C to stop) |
 | `rci tui`                            | Textual TUI dashboard                              |
 | `rci version`                        | prints the rci-cli version                         |
 
-**Folder argument rules** (applies to `editor`, `shell`):
+**Folder argument rules** (applies to `editor`, `shell`, `agent`):
 
 - omitted → `cfg.home` (your cluster home dir)
 - relative → resolved under `cfg.home` (`rci shell myproj` → `<home>/myproj`)
@@ -95,6 +96,36 @@ fall back to `--help`.
 Persistence across ssh disconnect isn't wrapped at the rci-cli layer — run
 `tmux` or `screen` inside `rci shell` if you need it. The bare `rci` TUI
 itself runs locally and survives any ssh drop.
+
+### Agent — control Claude from your phone
+
+`rci agent` always spawns a **new** allocation (`agent-N`, gap-reused like
+`dev-N`), then runs [`claude remote-control`](https://docs.claude.com/) on
+the compute node so the session is pairable from claude.ai/code or the
+Claude mobile app. Pass-through flags map 1:1 to the `claude` ones:
+
+```sh
+rci agent                                       # CPU agent in $home
+rci agent sam2rl --gpu                          # GPU agent in <home>/sam2rl
+rci agent --permission-mode bypassPermissions   # auto-accept tool calls
+rci agent --spawn worktree --capacity 16        # worktree-isolated sessions
+rci agent --name nightly-train                  # custom claude.ai/code label
+```
+
+Defaults for `--permission-mode` / `--spawn` / `--capacity` come from the
+`agent_*` keys in `~/.config/rci-cli/config.toml`; the `--name` defaults to
+the job name (`agent-N`). Run `claude remote-control --help` for the meaning
+of each option. Each invocation is a separate server — there's no reuse, by
+design.
+
+**Detached launch.** The `claude remote-control` server starts in the
+background via `nohup … & disown`, so `rci agent` (and the TUI) returns
+immediately — no terminal handover, the session keeps running after you
+disconnect. Stdout/stderr append to
+`~/.rci/agent-logs/<name>.log` on the compute node — `rci shell` to it
+and `tail -f` if you ever need to peek at startup output. Pairing itself
+needs no link: once you're signed into claude.ai/code or the mobile app,
+the new session shows up there automatically.
 
 ---
 
@@ -127,6 +158,7 @@ Bare `rci` opens the dashboard:
 | `s` | **Submit** — open the New Instance modal to spawn a new allocation |
 | `c` | **Connect** — shell into the highlighted job's compute node (prompts for folder first) |
 | `e` | **Editor** — VS Code Remote-SSH against the highlighted job (prompts for folder first) |
+| `a` | **Agent** — spawn a new `agent-N` and run `claude remote-control` (folder → agent options → resources) |
 | `k` | **Kill** — cancel the highlighted job (confirmation modal, default ✕ No) |
 | `r` | force-refresh the table (also auto-refreshes every 5s) |
 | `↑/↓` | navigate rows; the detail line updates live |
@@ -149,9 +181,20 @@ Bare `rci` opens the dashboard:
 ```
 
 - **Job name** is pre-filled with a suggestion: `dev-N` for Submit/Connect
-  (lowest unused N — cancelled numbers come back into play) or `editor` for
-  the Editor flow (singleton, no number). Blanking the field reverts to the
-  suggestion; otherwise type whatever you like (e.g. `train-llama`).
+  (lowest unused N — cancelled numbers come back into play), `editor` for
+  the Editor flow (singleton, no number), or `agent-N` for the Agent flow.
+  Blanking the field reverts to the suggestion; otherwise type whatever you
+  like (e.g. `train-llama`).
+
+**Agent flow** (`a`) is a 3-step wizard so the claude knobs stay separate
+from the Slurm ones:
+
+1. **Folder** — `FolderModal` (same as Connect/Editor).
+2. **Agent options** — `AgentOptionsModal`: permission mode, spawn mode,
+   capacity. Defaults come from `cfg.agent_*`; q/escape backs out to (1).
+3. **Resources** — the standard New Instance modal with the suggested
+   `agent-N` name; q/escape backs to (2) and your option choices are
+   preserved.
 
 - **No widget is focused on open.** Press **Enter** to submit the prefilled
   defaults (last-used params, or `cfg.cpu_defaults` / `gpu_defaults`).
@@ -193,9 +236,18 @@ gpu_partition = "gpufast"
 # Connect / ``rci cpu`` / ``rci gpu`` becomes ``<dev_job_name>-N`` (lowest
 # unused N — cancelled numbers are reused). The Editor flow spawns a singleton
 # ``<editor_job_name>`` (no number) since there's only ever one at a time.
-# ``rci cancel-dev`` matches both prefixes.
+# The Agent flow always spawns a fresh ``<agent_job_name>-N``; ``rci cancel-dev``
+# sweeps all three prefixes.
 dev_job_name = "dev"
 editor_job_name = "editor"
+agent_job_name = "agent"
+
+# Defaults for ``claude remote-control`` flags used by ``rci agent`` and the
+# TUI's Agent flow. Override per-call with --permission-mode / --spawn /
+# --capacity. See ``claude remote-control --help`` for accepted values.
+agent_permission_mode = "default"   # acceptEdits | auto | bypassPermissions | default | dontAsk | plan
+agent_spawn_mode = "same-dir"       # same-dir | worktree | session
+agent_capacity = 32                 # max concurrent sessions per server
 
 # Resource defaults — kept conservative so a forgotten allocation doesn't
 # burn quota. Override per-call with --cores / --mem / --time / --gpus.

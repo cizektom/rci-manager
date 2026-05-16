@@ -27,12 +27,13 @@ _rci() {
                 'jobs:List your Slurm jobs (squeue)'
                 'cancel:Cancel a specific job by ID'
                 'cancel-all:Cancel ALL your jobs (with confirmation)'
-                'cancel-dev:Cancel all rci-managed allocations (dev + dev-gpu)'
+                'cancel-dev:Cancel all rci-managed allocations (dev* + editor + agent*)'
             )
             interactive=(
                 'ssh:Open a shell on the RCI login host'
                 'shell:Interactive bash on the compute node'
                 'editor:Open VS Code Remote-SSH on the compute node'
+                'agent:Spawn agent-N and run claude remote-control on it'
                 'tui:Launch the interactive TUI'
             )
             utility=(
@@ -62,6 +63,19 @@ _rci() {
                 editor|shell)
                     _arguments \
                         '--gpu[require a GPU allocation]' \
+                        '1:remote folder (empty=$HOME on cluster, relative→under home, absolute→as-is): '
+                    ;;
+                agent)
+                    _arguments \
+                        '--gpu[request a GPU allocation]' \
+                        '(-c --cores)'{-c,--cores}'[CPU cores]:cores:(2 4 8 16 32)' \
+                        '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(4 8 16 32 64 128)' \
+                        '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(0:30:00 1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)' \
+                        '(-g --gpus)'{-g,--gpus}'[number of GPUs]:gpus:(1 2 4 8)' \
+                        '--name[claude session name (defaults to job name)]:name: ' \
+                        '--permission-mode[claude permission mode]:mode:(default acceptEdits auto bypassPermissions dontAsk plan)' \
+                        '--spawn[claude spawn mode]:mode:(same-dir worktree session)' \
+                        '--capacity[max concurrent sessions]:n:(4 8 16 32 64)' \
                         '1:remote folder (empty=$HOME on cluster, relative→under home, absolute→as-is): '
                     ;;
                 alloc)
