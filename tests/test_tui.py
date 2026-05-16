@@ -809,3 +809,139 @@ async def test_confirm_modal_neutral_also_focuses_no(monkeypatch) -> None:
         await pilot.pause()
         scr = app.screen
         assert app.focused is scr.query_one("#no", Button)
+
+
+async def test_confirm_modal_default_yes_focuses_yes(monkeypatch) -> None:
+    """``default_yes=True`` opts a caller out of the safe default — the kill
+    dialog uses this so Enter confirms the cancel."""
+    from textual.widgets import Button
+
+    from rci_cli.tui import ConfirmModal
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            ConfirmModal("Kill?", dangerous=True, default_yes=True), lambda _b: None
+        )
+        await pilot.pause()
+        scr = app.screen
+        assert app.focused is scr.query_one("#yes", Button)
+
+
+# ── SetupModal / first-run flow ─────────────────────────────────────────────
+
+
+async def test_setup_modal_pops_on_first_run(monkeypatch, tmp_path) -> None:
+    """No config file ⇒ ``RciApp.on_mount`` stacks the SetupModal on top of
+    the dashboard. Without this the JobsPanel would try to ``squeue -u ''``."""
+    from rci_cli.tui import SetupModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    # Override the autouse conftest fixture — point at an empty config dir.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, SetupModal)
+
+
+async def test_setup_modal_save_writes_config_and_refreshes(
+    monkeypatch, tmp_path
+) -> None:
+    """Filling the modal and pressing Save must (1) write the TOML file and
+    (2) trigger a JobsPanel refresh that now sees a valid user."""
+    from textual.widgets import Input
+
+    from rci_cli.tui import JobsPanel, SetupModal
+
+    cfg_root = tmp_path / "fresh-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_root))
+
+    list_jobs_calls: list = []
+
+    def fake_list_jobs(cfg):
+        list_jobs_calls.append(cfg.user)
+        return ""
+
+    monkeypatch.setattr(slurm, "list_jobs", fake_list_jobs)
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, SetupModal)
+        # JobsPanel was composed at mount under the modal — confirm it's there.
+        assert app.query_one(JobsPanel) is not None
+        scr = app.screen
+        scr.query_one("#setup-user", Input).value = "alice"
+        # ssh-host pre-fills to "rci"; home blank ⇒ /home/alice; venv blank
+        scr._do_save()
+        # Give the dismiss + after-setup refresh a chance to land.
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if list_jobs_calls:
+                break
+
+        saved = cfg_root / "rci-cli" / "config.toml"
+        assert saved.exists()
+        assert 'user = "alice"' in saved.read_text()
+        # The post-save refresh hit slurm with the freshly-saved user.
+        assert list_jobs_calls == ["alice"], list_jobs_calls
+
+
+async def test_setup_modal_cancel_exits_app(monkeypatch, tmp_path) -> None:
+    """Esc / Cancel must end the session — the app can't do anything
+    without a configured user."""
+    from rci_cli.tui import SetupModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, SetupModal)
+        app.screen.dismiss(False)
+        # Give the after-setup callback (calls self.exit()) a chance to run.
+        for _ in range(10):
+            await pilot.pause(0.05)
+            if not app.is_running:
+                break
+    assert not app.is_running
+
+
+async def test_setup_modal_save_requires_user(monkeypatch, tmp_path) -> None:
+    """Empty user must keep the modal open (no silent dismiss)."""
+    from textual.widgets import Input
+
+    from rci_cli.tui import SetupModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, SetupModal)
+        scr = app.screen
+        scr.query_one("#setup-user", Input).value = ""
+        scr._do_save()
+        await pilot.pause()
+        # Still on the SetupModal.
+        assert isinstance(app.screen, SetupModal)
+
+
+async def test_dashboard_skips_setup_when_already_configured(monkeypatch) -> None:
+    """With a valid config (autouse conftest), the SetupModal must NOT pop —
+    the JobsPanel takes the screen as usual."""
+    from rci_cli.tui import JobsPanel, SetupModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not isinstance(app.screen, SetupModal)
+        # Dashboard panel is mounted.
+        assert app.query_one(JobsPanel) is not None

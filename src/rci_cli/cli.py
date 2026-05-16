@@ -1,6 +1,7 @@
 """Typer entry point for the ``rci`` CLI.
 
-Subcommands mirror the existing zsh ``rci-*`` helpers and add an interactive ``tui``.
+Subcommands wrap the Slurm primitives (``squeue`` / ``salloc`` / ``scancel``)
+and add an interactive ``tui`` and a first-run ``setup`` flow.
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ import typer
 from rich import print as rprint
 
 from . import alloc as alloc_mod
-from . import launch, slurm
+from . import config as config_mod
+from . import launch, setup as setup_mod, slurm
 from . import ssh as ssh_mod
 from .config import Config, load
 
@@ -31,13 +33,22 @@ def _default(ctx: typer.Context) -> None:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         typer.echo(ctx.get_help())
         return
+    # First-run: walk the user through setup before opening the TUI so the
+    # dashboard's first refresh has somewhere to talk to.
+    if config_mod.needs_setup():
+        setup_mod.run_cli()
     from .tui import RciApp
 
     RciApp().run()
 
 
 def _cfg() -> Config:
-    return load()
+    """Return the active config, exiting with a setup hint if not yet configured."""
+    cfg = load()
+    if config_mod.needs_setup(cfg):
+        rprint("[yellow]rci-cli isn't configured yet.[/yellow] Run [b]rci setup[/b] first.")
+        raise typer.Exit(code=2)
+    return cfg
 
 
 def _require_alloc(cfg: Config, *, require_gpu: bool = False) -> alloc_mod.Allocation:
@@ -50,15 +61,21 @@ def _require_alloc(cfg: Config, *, require_gpu: bool = False) -> alloc_mod.Alloc
 
 
 @app.command()
+def setup() -> None:
+    """Run the first-run setup wizard (or edit ``~/.config/rci-cli/config.toml`` by hand)."""
+    setup_mod.run_cli()
+
+
+@app.command()
 def ssh() -> None:
-    """Open an interactive shell on the RCI login host (``ssh rci``)."""
+    """Open an interactive shell on the cluster login host (``ssh <ssh_host>``)."""
     cfg = _cfg()
     sys.exit(ssh_mod.run(cfg.ssh_host, "", tty=False, check=False))
 
 
 @app.command()
 def jobs() -> None:
-    """List your jobs on RCI (``squeue -u <user>``)."""
+    """List your jobs (``squeue -u <user>``)."""
     cfg = _cfg()
     typer.echo(slurm.list_jobs(cfg))
 
@@ -69,7 +86,7 @@ def cpu(
     mem: Annotated[int, typer.Option("-m", "--mem", help="memory in GB")] = -1,
     time: Annotated[str, typer.Option("-t", "--time", help="walltime, e.g. 4:00:00")] = "",
 ) -> None:
-    """Submit a CPU ``vscode`` allocation."""
+    """Submit a CPU allocation."""
     cfg = _cfg()
     d_cores, d_mem, d_time = cfg.cpu_defaults
     out = slurm.submit_cpu(
@@ -90,7 +107,7 @@ def gpu(
     mem: Annotated[int, typer.Option("-m", "--mem", help="memory in GB")] = -1,
     time: Annotated[str, typer.Option("-t", "--time", help="walltime, e.g. 4:00:00")] = "",
 ) -> None:
-    """Submit a GPU ``vscode-gpu`` allocation."""
+    """Submit a GPU allocation."""
     cfg = _cfg()
     d_gpus, d_cores, d_mem, d_time = cfg.gpu_defaults
     out = slurm.submit_gpu(
@@ -194,7 +211,7 @@ def alloc(
 ) -> None:
     """Print ``<node> <jobid>`` of an existing allocation, submitting one if needed.
 
-    Scripting-friendly equivalent of the zsh ``_rci_alloc`` helper.
+    Scripting-friendly.
     """
     cfg = _cfg()
     a = _require_alloc(cfg, require_gpu=gpu)
@@ -224,7 +241,7 @@ def port(
 
 @app.command()
 def tui() -> None:
-    """Launch the interactive TUI (Textual). Skeleton — extended capabilities WIP."""
+    """Launch the interactive TUI (Textual)."""
     from .tui import RciApp
 
     RciApp().run()

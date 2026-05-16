@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from rci_cli import alloc as alloc_mod
-from rci_cli import launch, slurm
+from rci_cli import config as config_mod
+from rci_cli import launch, setup as setup_mod, slurm
 from rci_cli import ssh as ssh_mod
 from rci_cli.alloc import Allocation
 from rci_cli.cli import app
@@ -136,3 +139,45 @@ def test_editor_runs_for_known_alloc(monkeypatch) -> None:
     result = runner.invoke(app, ["editor", "sam2rl"])
     assert result.exit_code == 0
     assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl"}
+
+
+# ── first-run setup gating ──────────────────────────────────────────────────
+
+
+def test_subcommand_exits_with_setup_hint_when_unconfigured(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Any cluster-touching command must refuse to run with an empty config and
+    point the user at ``rci setup`` instead of crashing on ``squeue -u ''``."""
+    # Override the autouse XDG isolation: empty config dir ⇒ needs_setup() == True.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    result = runner.invoke(app, ["jobs"])
+    assert result.exit_code == 2
+    assert "rci setup" in result.stdout
+
+
+def test_setup_subcommand_writes_config(monkeypatch, tmp_path: Path) -> None:
+    """``rci setup`` runs the wizard non-interactively here (typer.prompt
+    stubbed), and the resulting TOML file lands under XDG_CONFIG_HOME."""
+    cfg_root = tmp_path / "fresh"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_root))
+
+    answers = iter(["alice", "rci", "/home/alice"])
+    monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **kw: next(answers))
+
+    result = runner.invoke(app, ["setup"])
+    assert result.exit_code == 0, result.stdout
+
+    written = cfg_root / "rci-cli" / "config.toml"
+    assert written.exists()
+    loaded = config_mod.load()
+    assert loaded.user == "alice"
+    assert loaded.home == "/home/alice"
+
+
+def test_version_works_without_setup(monkeypatch, tmp_path: Path) -> None:
+    """``version`` shouldn't be gated on the wizard — it's a pure stdout call."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert "0.1.0" in result.stdout

@@ -28,14 +28,32 @@ def test_resolve_folder_absolute_passthrough(cfg: Config) -> None:
     assert resolve_folder("/scratch/exp42", cfg) == "/scratch/exp42"
 
 
+def test_resolve_folder_uses_effective_home_fallback() -> None:
+    """When ``home`` is empty but ``user`` is set, ``/home/<user>`` is implied
+    — relative paths still resolve against that fallback."""
+    cfg = Config(user="alice")  # no explicit home
+    assert resolve_folder("", cfg) == "/home/alice"
+    assert resolve_folder("proj", cfg) == "/home/alice/proj"
+
+
 # ── remote preamble ────────────────────────────────────────────────────────
 
 
-def test_remote_preamble_cds_sources_venv_and_sets_path(cfg: Config) -> None:
-    s = _remote_preamble("/home/cizekto2/sam2rl", cfg)
-    assert "cd '/home/cizekto2/sam2rl'" in s
-    assert cfg.venv_activate in s
+def test_remote_preamble_cds_and_tries_relative_venv() -> None:
+    """After ``cd <folder>``, the preamble always tries to source
+    ``.venv/bin/activate`` — relative, so it adapts per-project. Folders
+    without a venv get a no-op via the ``[ -f ... ]`` guard."""
+    s = _remote_preamble("/home/alice/proj")
+    assert "cd '/home/alice/proj'" in s
+    assert "[ -f .venv/bin/activate ] && . .venv/bin/activate" in s
     assert "$HOME/bin:$HOME/.local/bin:$PATH" in s
+
+
+def test_remote_preamble_does_not_reference_absolute_venv() -> None:
+    """Regression: the venv path is always relative (``.venv/bin/activate``)
+    — no ``$HOME/...`` prefix that would tie it to one project."""
+    s = _remote_preamble("/home/alice")
+    assert "$HOME/" not in s.split("PATH=")[0]  # only the PATH line uses $HOME
 
 
 # ── launchers (mock ssh.run / ssh.run_local) ───────────────────────────────

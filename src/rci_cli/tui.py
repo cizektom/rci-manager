@@ -30,7 +30,8 @@ from textual.widgets import (
 )
 
 from . import alloc as alloc_mod
-from . import launch, slurm, ssh, state
+from . import config as config_mod
+from . import launch, setup as setup_mod, slurm, ssh, state
 from .config import Config, load
 
 REFRESH_INTERVAL = 5.0
@@ -47,13 +48,12 @@ RUNNING_STATES = frozenset({"R", "RUNNING"})
 class ConfirmModal(ModalScreen[bool]):
     """Generic yes/no confirmation. Returns True/False via ``dismiss``.
 
-    Initial focus is always on the ``No`` button so Enter aborts by default,
-    dangerous or not. To proceed, Tab to ``Yes`` (or press ``y`` anywhere).
-    This eliminates the failure mode where a user reflex-confirms a dialog
-    that just popped up without reading it.
+    Defaults focus to ``No`` so a reflex Enter never confirms. Pass
+    ``default_yes=True`` for dialogs where Enter-to-proceed is the desired
+    affordance (the caller is asserting the reflex risk is acceptable).
     """
 
-    # Disable Textual's "auto-focus first focusable" — we pick the safe
+    # Disable Textual's "auto-focus first focusable" — we pick the
     # default ourselves in :meth:`on_mount`.
     AUTO_FOCUS: ClassVar[str] = ""
 
@@ -63,10 +63,13 @@ class ConfirmModal(ModalScreen[bool]):
         Binding("escape", "no", "Cancel", show=False),
     ]
 
-    def __init__(self, prompt: str, *, dangerous: bool = False) -> None:
+    def __init__(
+        self, prompt: str, *, dangerous: bool = False, default_yes: bool = False
+    ) -> None:
         super().__init__()
         self.prompt = prompt
         self.dangerous = dangerous
+        self.default_yes = default_yes
 
     def compose(self) -> ComposeResult:
         # Plain Container is non-focusable by default, so the first Tab walks
@@ -83,9 +86,8 @@ class ConfirmModal(ModalScreen[bool]):
                 yield Button("No", id="no")
 
     def on_mount(self) -> None:
-        # Always focus ``No`` on open. Enter never proceeds unintentionally —
-        # the user must Tab to ``Yes`` or press ``y`` to proceed.
-        self.query_one("#no", Button).focus()
+        target = "#yes" if self.default_yes else "#no"
+        self.query_one(target, Button).focus()
 
     @on(Button.Pressed, "#yes")
     def _yes(self) -> None:
@@ -445,7 +447,7 @@ class FolderModal(ModalScreen[str | None]):
             yield Input(
                 value=self.default_folder,
                 id="folder",
-                placeholder="e.g. sam2rl  or  /scratch/exp42",
+                placeholder="e.g. myproj  or  /scratch/exp42",
             )
             with Horizontal(id="modal-buttons"):
                 yield Button("Open", id="ok")
@@ -464,6 +466,102 @@ class FolderModal(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class SetupModal(ModalScreen[bool]):
+    """First-run wizard: collects the minimum fields needed to talk to a cluster
+    and writes them to ``~/.config/rci-cli/config.toml``.
+
+    Dismisses with ``True`` on save, ``False`` on cancel. Re-running with a
+    populated config prefills every field — same widget doubles as ``,`` /
+    edit-config (future enhancement, currently only triggered on first launch).
+    """
+
+    # First focusable widget (the user field) gets focus on mount. Unlike
+    # NewInstanceModal we *want* the user to start typing immediately.
+    AUTO_FOCUS: ClassVar[str] = "#setup-user"
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        # Priority so Esc backs out even while an Input has focus. There's no
+        # ``q`` binding because every field is a free-text Input where ``q`` is
+        # a legitimate character.
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Prefill from whatever's currently saved so re-running setup doesn't
+        # start from blank fields. On a true first run, all fields are empty
+        # and the ssh-host field defaults to the Config-level "rci".
+        self._existing = config_mod.load()
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="modal-box", can_focus=False):
+            yield Label("[b]rci-cli setup[/b]", id="modal-title")
+            yield Static(
+                "Fill in once; edit ~/.config/rci-cli/config.toml later to change.",
+                id="setup-blurb",
+            )
+            yield Label("SSH username on the cluster")
+            yield Input(
+                value=self._existing.user,
+                id="setup-user",
+                placeholder="e.g. jdoe2",
+            )
+            yield Label("SSH host alias (from ~/.ssh/config)")
+            yield Input(
+                value=self._existing.ssh_host or "rci",
+                id="setup-host",
+            )
+            yield Label("Home directory on the cluster")
+            yield Input(
+                value=self._existing.home,
+                id="setup-home",
+                placeholder="blank → /home/<user>",
+            )
+            with Horizontal(id="modal-buttons"):
+                yield Button("Save", id="ok")
+                yield Button("Cancel", id="cancel")
+
+    @on(Button.Pressed, "#ok")
+    def _on_ok(self) -> None:
+        self._do_save()
+
+    @on(Input.Submitted)
+    def _on_input_submitted(self) -> None:
+        # Enter on an Input advances field-by-field; on the last field it lands
+        # on the Save button, where the user presses Enter again to commit.
+        self.focus_next()
+
+    @on(Button.Pressed, "#cancel")
+    def _on_cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def _do_save(self) -> None:
+        user = self.query_one("#setup-user", Input).value.strip()
+        if not user:
+            self.app.notify("SSH username is required.", severity="error")
+            self.query_one("#setup-user", Input).focus()
+            return
+        try:
+            cfg = setup_mod.build_cfg(
+                user=user,
+                ssh_host=self.query_one("#setup-host", Input).value.strip(),
+                home=self.query_one("#setup-home", Input).value.strip(),
+            )
+        except ValueError as e:
+            self.app.notify(str(e), severity="error")
+            return
+        try:
+            path = config_mod.save(cfg)
+        except OSError as e:
+            self.app.notify(f"Failed to save config: {e}", severity="error", timeout=8)
+            return
+        self.app.notify(f"Saved to {path}", timeout=4)
+        self.dismiss(True)
 
 
 # ──────────────────────────── jobs screen ───────────────────────────────────
@@ -584,6 +682,11 @@ class JobsPanel(Container):
     @work(thread=True, exclusive=True, group="refresh")
     def refresh_jobs(self) -> None:
         cfg = load()
+        # Setup hasn't run yet — the SetupModal is still up on top of the
+        # dashboard. Skip silently; the modal's save callback will fire a
+        # one-off refresh once the user is set.
+        if not cfg.user:
+            return
         try:
             raw = slurm.list_jobs(cfg)
         except Exception as e:  # noqa: BLE001
@@ -712,7 +815,7 @@ class JobsPanel(Container):
             return
         prompt = f"Cancel job [b]{row.jobid}[/] ([i]{row.name}[/], {row.state}) on {row.partition}?"
         self.app.push_screen(
-            ConfirmModal(prompt, dangerous=True),
+            ConfirmModal(prompt, dangerous=True, default_yes=True),
             lambda ok: self._do_cancel(row.jobid) if ok else None,
         )
 
@@ -995,9 +1098,14 @@ FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
    dashboard underneath shows through at full brightness around the modal
    box. The modal-box itself is opaque (default bg + cyan border) so its
    content stays crisp; only the area outside the box is "see-through". */
-ConfirmModal, NewInstanceModal, FolderModal {
+ConfirmModal, NewInstanceModal, FolderModal, SetupModal {
     align: center middle;
     background: transparent;
+}
+
+#setup-blurb {
+    padding-bottom: 1;
+    color: ansi_bright_black;
 }
 
 #partition-row { height: auto; padding-bottom: 1; }
@@ -1090,7 +1198,7 @@ class RciApp(App):
     """Top-level Textual app — live Slurm jobs dashboard."""
 
     CSS = CSS
-    TITLE = "RCI Cluster Manager"
+    TITLE = "RCI Job Manager"
     # Drop the default ``^p palette`` footer entry — we don't expose any
     # actions through it, so the Ctrl-prefixed key only adds clutter next to
     # the single-letter bindings.
@@ -1113,6 +1221,21 @@ class RciApp(App):
         # Textual's Header ships a ``⭘`` icon in the top-left — clickable toggle
         # for the clock that just adds visual noise here. Blank it out.
         self.query_one(Header).icon = ""
+        # First-run: stack the setup wizard on top of the dashboard. The
+        # JobsPanel's threaded refresh early-returns on empty user, so the
+        # background tick stays silent until the modal saves.
+        if config_mod.needs_setup():
+            self.push_screen(SetupModal(), self._after_setup)
+
+    def _after_setup(self, saved: bool) -> None:
+        """Callback for :class:`SetupModal` — either kick off the first refresh
+        with the freshly-saved config, or exit if the user cancelled (the
+        dashboard can't do anything without a configured ``user``)."""
+        if not saved:
+            self.exit()
+            return
+        # New config — fire an immediate refresh; the interval tick continues normally.
+        self.query_one(JobsPanel).refresh_jobs()
 
     def action_toggle_theme(self) -> None:
         # Minimal cycle: stick with the terminal palette by default, fall back

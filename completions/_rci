@@ -36,6 +36,7 @@ _rci() {
                 'tui:Launch the interactive TUI'
             )
             utility=(
+                'setup:(Re-)run the first-run configuration wizard'
                 'version:Print rci-cli version'
             )
             _describe -t allocation 'allocation' allocation
@@ -61,7 +62,7 @@ _rci() {
                 editor|shell)
                     _arguments \
                         '--gpu[require a GPU allocation]' \
-                        '1:remote folder (empty=/home/cizekto2, relative→under home, absolute→as-is): '
+                        '1:remote folder (empty=$HOME on cluster, relative→under home, absolute→as-is): '
                     ;;
                 alloc)
                     _arguments '--gpu[require a GPU allocation]'
@@ -72,7 +73,7 @@ _rci() {
                 port)
                     _arguments '1:port spec (8888 or 8888:9000): '
                     ;;
-                cancel-all|cancel-dev|jobs|ssh|tui|version)
+                cancel-all|cancel-dev|jobs|setup|ssh|tui|version)
                     # no further args
                     ;;
             esac

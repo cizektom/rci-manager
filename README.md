@@ -1,26 +1,58 @@
 # rci-cli
 
-A CLI + Textual TUI for the **RCI CVUT Slurm cluster**. Submit allocations,
-shell into the assigned compute node, run VS Code Remote-SSH, cancel jobs,
-forward ports — all from one tool with a dashboard you can leave open.
+A CLI + Textual TUI for the **RCI CVUT Slurm cluster** (and, with one config
+edit, any other Slurm site). Submit allocations, shell into the assigned
+compute node, run VS Code Remote-SSH, cancel jobs, forward ports — all from
+one tool with a dashboard you can leave open.
 
 ```sh
-git clone git@github.com:cizektom/rci-cli.git ~/rci-cli
+git clone https://github.com/cizektom/rci-cli.git ~/rci-cli
 uv tool install --python 3.11 ~/rci-cli   # or: pipx install ~/rci-cli
-rci --help
+rci         # first run pops a setup wizard
 ```
 
-The binary is named `rci`. If you previously used the
-[zsh-setup](https://github.com/cizektom/zsh-setup) `alias rci='ssh rci'`,
-remove it — `rci ssh` does the same and the alias would otherwise shadow
-this binary.
+---
+
+## First-run setup
+
+`rci-cli` ships **without** any cluster-specific personal info — the binary
+walks you through a one-time setup on first launch (TUI modal) or via
+`rci setup` (terminal prompt). Three fields:
+
+| field      | what it is                            | default        |
+| ---------- | ------------------------------------- | -------------- |
+| `user`     | your SSH username on the cluster      | (required)     |
+| `ssh_host` | host alias from `~/.ssh/config`       | `rci`          |
+| `home`     | absolute home dir on the cluster      | `/home/<user>` |
+
+The wizard writes `~/.config/rci-cli/config.toml`. Edit by hand any time, or
+re-run `rci setup` to repopulate from the existing values.
+
+When you `rci shell <folder>` (or `rci editor <folder>`), the launcher
+`cd`s into the folder on the compute node and — if a `.venv/bin/activate`
+exists there — sources it. No config needed; projects without a `.venv` are
+left alone.
 
 ---
 
 ## Prerequisites
 
-1. **SSH config** with `Host rci` (and `Host n* g*` via `ProxyJump rci`) — see
-   [zsh-setup/ssh/rci.conf](https://github.com/cizektom/zsh-setup/blob/main/ssh/rci.conf).
+1. **SSH config** with a `Host` entry matching `ssh_host` above, plus
+   `ProxyJump` entries for the cluster's compute nodes — example for RCI:
+
+   ```sshconfig
+   Host rci
+       HostName login3.rci.cvut.cz
+       User <your-username>
+
+   Host n* g*
+       ProxyJump rci
+       User <your-username>
+   ```
+
+   For other clusters, point `Host` at your login node and add `ProxyJump`
+   entries that match your compute-node naming.
+
 2. **Python ≥ 3.11**.
 3. **`uv`** (recommended), `pipx`, or any `pip` install method.
 
@@ -34,6 +66,7 @@ fall back to `--help`.
 | command                              | notes                                              |
 | ------------------------------------ | -------------------------------------------------- |
 | `rci`                                | TUI dashboard (same as `rci tui`)                  |
+| `rci setup`                          | (re-)run the configuration wizard                  |
 | `rci ssh`                            | interactive shell on the login host                |
 | `rci jobs`                           | `squeue -u $USER` with the friendly format         |
 | `rci cpu`                            | submit a CPU `dev` allocation — `-c -m -t` flags   |
@@ -50,8 +83,8 @@ fall back to `--help`.
 
 **Folder argument rules** (applies to `editor`, `shell`):
 
-- omitted → `cfg.home` (default `/home/cizekto2`)
-- relative → resolved under `cfg.home` (`rci shell sam2rl` → `/home/cizekto2/sam2rl`)
+- omitted → `cfg.home` (your cluster home dir)
+- relative → resolved under `cfg.home` (`rci shell myproj` → `<home>/myproj`)
 - absolute → used as-is
 
 Persistence across ssh disconnect isn't wrapped at the rci-cli layer — run
@@ -85,7 +118,7 @@ Bare `rci` opens the dashboard:
 
 | key | action |
 |-----|--------|
-| `l` | **Login** — open a shell on the RCI login host |
+| `l` | **Login** — open a shell on the cluster login host |
 | `s` | **Submit** — open the New Instance modal to spawn a new allocation |
 | `c` | **Connect** — shell into the highlighted job's compute node (prompts for folder first) |
 | `e` | **Editor** — VS Code Remote-SSH against the highlighted job (prompts for folder first) |
@@ -130,13 +163,15 @@ Bare `rci` opens the dashboard:
 
 ## Configuration
 
-Defaults match the original zsh helpers and the RCI cluster's actual
-partitions. Override any field in `~/.config/rci-cli/config.toml`:
+The setup wizard writes the **personal** fields (`user`, `ssh_host`, `home`).
+Every other field has a cluster-wide default matching the RCI cluster — edit
+`~/.config/rci-cli/config.toml` to override:
 
 ```toml
-user = "cizekto2"
+# personal — filled in by `rci setup`, change at any time
+user = "jdoe2"
 ssh_host = "rci"
-home = "/home/cizekto2"
+home = "/home/jdoe2"
 
 # Default partitions for ``rci cpu`` / ``rci gpu`` (CLI). The modal lets you
 # pick any partition; these are the auto-defaults.
@@ -151,9 +186,6 @@ gpu_job_name = "dev-gpu"
 # burn quota. Override per-call with --cores / --mem / --time / --gpus.
 cpu_defaults = [2, 4, "1:00:00"]      # cores, memGB, walltime
 gpu_defaults = [1, 2, 8, "1:00:00"]   # gpus, cores, memGB, walltime
-
-# Compute-node venv to source before claude / editor / shell launches.
-venv_activate = "$HOME/sam2rl/.venv/bin/activate"
 
 # Partition catalog — what the modal's two dropdowns offer. Override these
 # to adapt rci-cli to a different Slurm cluster without changing any code.
@@ -182,13 +214,14 @@ Single Python package, `src/` layout:
 ```
 src/rci_cli/
 ├── cli.py        # Typer app — subcommand routing
-├── config.py     # Defaults + TOML overrides
+├── config.py     # Defaults + TOML overrides + save() for the wizard
+├── setup.py      # First-run wizard (CLI side; TUI modal lives in tui.py)
 ├── state.py      # Persistent state (last folder, last modal params) — JSON
 ├── ssh.py        # ssh wrappers (capture / run / run_local / port_forward)
 ├── slurm.py      # squeue / salloc / scancel primitives
 ├── alloc.py      # select_or_submit() — re-use or spawn an allocation
 ├── launch.py     # shell / editor launchers on compute nodes
-└── tui.py        # Textual app, modals, jobs dashboard
+└── tui.py        # Textual app, modals, jobs dashboard, SetupModal
 ```
 
 Everything that touches Slurm goes through `slurm.py`; everything that touches
@@ -203,6 +236,7 @@ so the contract surface is small and well-tested.
 - [x] Live jobs dashboard (TUI) with one-key actions.
 - [x] In-TUI cancel / submit / attach.
 - [x] Per-call partition picker (cluster portability via config catalog).
+- [x] First-run setup wizard (CLI + TUI) — no personal info in the source tree.
 - [ ] Log tailing for running jobs (`sattach` or remote `tail -F`).
 - [ ] GPU/CPU utilization snapshot on the active node.
 - [ ] Saved allocation profiles (`rci profile use ml-train`).
@@ -215,7 +249,7 @@ so the contract surface is small and well-tested.
 ## Development
 
 ```sh
-git clone git@github.com:cizektom/rci-cli.git ~/rci-cli
+git clone https://github.com/cizektom/rci-cli.git ~/rci-cli
 cd ~/rci-cli
 python3.11 -m venv .venv && . .venv/bin/activate
 pip install -e ".[test]"
@@ -239,14 +273,15 @@ uv tool install --reinstall --python 3.11 ~/rci-cli
 
 ```
 tests/
-├── conftest.py     # cfg fixture
-├── test_config.py  # TOML load + defaults + partition-catalog overrides
-├── test_alloc.py   # select_or_submit (re-use existing, submit when missing)
-├── test_launch.py  # resolve_folder + remote-preamble + launchers
-├── test_slurm.py   # salloc / squeue / scancel command-string assertions
-├── test_ssh.py     # ssh argv shape (subprocess.run mocked)
-├── test_cli.py     # Typer CliRunner — version / jobs / cancel / cpu / gpu / alloc / port / shell / editor
-└── test_tui.py     # headless Textual mount + modals + JobRow parser + state persistence
+├── conftest.py      # cfg fixture + autouse XDG isolation
+├── test_config.py   # TOML load + defaults + save() + needs_setup()
+├── test_setup.py    # wizard: build_cfg, run_cli prompts
+├── test_alloc.py    # select_or_submit (re-use existing, submit when missing)
+├── test_launch.py   # resolve_folder + remote-preamble + launchers
+├── test_slurm.py    # salloc / squeue / scancel command-string assertions
+├── test_ssh.py      # ssh argv shape (subprocess.run mocked)
+├── test_cli.py      # Typer CliRunner — every subcommand
+└── test_tui.py      # headless Textual mount + modals + JobRow parser + state persistence
 ```
 
 All network-touching primitives are monkeypatched per-test (`rci_cli.ssh`,
@@ -268,3 +303,9 @@ completion):
 cp completions/_rci ~/.zfunc/_rci
 # ensure ``fpath=(~/.zfunc $fpath)`` runs before ``compinit`` in your .zshrc
 ```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

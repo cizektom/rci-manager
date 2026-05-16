@@ -1,8 +1,10 @@
 """Launch interactive tools on a compute node — shell and VS Code Remote-SSH.
 
 Compute nodes (``n*``/``g*``) don't have zsh installed and their bash doesn't
-replicate the login-node setup, so we manually source the sam2rl venv and
-prepend ``$HOME/bin:$HOME/.local/bin`` to PATH inside each ssh invocation.
+replicate the login-node setup, so we ``cd`` into the working folder and try
+to source a ``.venv/bin/activate`` relative to it — silently skipping if the
+project doesn't have a venv there. ``$HOME/bin:$HOME/.local/bin`` is
+prepended to PATH the same way every shell-init file does it.
 
 No persistence layer at this level — ssh disconnect ends the session. Wrap
 inside the spawned bash with ``tmux`` / ``screen`` if you need survival.
@@ -20,29 +22,35 @@ from .config import Config
 def resolve_folder(folder: str | None, cfg: Config) -> str:
     """Folder rules shared by shell / editor launchers.
 
-    - empty → ``cfg.home``
-    - relative → resolved under ``cfg.home``
+    - empty → ``cfg.effective_home``
+    - relative → resolved under ``cfg.effective_home``
     - absolute → returned as-is
     """
+    home = cfg.effective_home
     if not folder:
-        return cfg.home
+        return home
     if folder.startswith("/"):
         return folder
-    return f"{cfg.home}/{folder}"
+    return f"{home}/{folder}"
 
 
-def _remote_preamble(folder: str, cfg: Config) -> str:
-    """Build the ``cd … && source venv && PATH=…`` prefix for compute-node commands."""
+def _remote_preamble(folder: str) -> str:
+    """Build the ``cd … && [source .venv] && PATH=…`` prefix for compute-node commands.
+
+    The venv source is conditional on a ``.venv/bin/activate`` existing
+    *relative to the folder we just cd'd into* — projects without one (or
+    that manage activation elsewhere) get a no-op.
+    """
     return (
         f"cd '{folder}' || {{ echo 'rci: {folder} not found on '\"$(hostname)\" >&2; exit 1; }}; "
-        f"[ -f {cfg.venv_activate} ] && . {cfg.venv_activate}; "
+        f"[ -f .venv/bin/activate ] && . .venv/bin/activate; "
         f'PATH="$HOME/bin:$HOME/.local/bin:$PATH"'
     )
 
 
 def launch_shell(alloc: Allocation, folder: str, cfg: Config) -> int:
     print(f"→ {alloc.node} (job {alloc.jobid}): opening shell in {folder}")
-    cmd = f"{_remote_preamble(folder, cfg)} exec bash -i"
+    cmd = f"{_remote_preamble(folder)} exec bash -i"
     return ssh.run(alloc.node, cmd, tty=True, check=False)
 
 
