@@ -50,8 +50,21 @@ def _remote_preamble(folder: str) -> str:
 
 
 def launch_shell(alloc: Allocation, folder: str, cfg: Config) -> int:
+    """Open an interactive bash inside the job's allocation.
+
+    Wrapped with ``srun --jobid=<jobid> --overlap --pty`` so the shell
+    joins the job's step and inherits its cgroup + environment
+    (``CUDA_VISIBLE_DEVICES``, memory limits, …). A bare
+    ``ssh node bash`` would land outside the allocation — fine on
+    clusters with ``pam_slurm_adopt`` enforcing GPU cgroups, but on
+    sites like RCI it'd expose every GPU on the node instead of just
+    the ones you requested.
+    """
     print(f"→ {alloc.node} (job {alloc.jobid}): opening shell in {folder}")
-    cmd = f"{_remote_preamble(folder)} exec bash -i"
+    cmd = (
+        f"{_remote_preamble(folder)} "
+        f"exec srun --jobid={alloc.jobid} --overlap --pty bash -i"
+    )
     return ssh.run(alloc.node, cmd, tty=True, check=False)
 
 
@@ -98,11 +111,15 @@ def launch_agent(
     )
     # The remote shell must: cd / source venv / set PATH (preamble),
     # ensure the log dir exists, then background claude with stdio
-    # detached from ssh so ssh disconnects right away.
+    # detached from ssh so ssh disconnects right away. The claude call
+    # itself is wrapped with ``srun --jobid=<jobid> --overlap`` so it
+    # runs as a step of the allocation — gets the right GPUs, lives
+    # inside the job's cgroup, and Slurm tracks its lifecycle.
     cmd = (
         f"{_remote_preamble(folder)}; "
         f"mkdir -p {AGENT_LOG_DIR} && "
-        f"nohup claude remote-control {flags} "
+        f"nohup srun --jobid={alloc.jobid} --overlap "
+        f"claude remote-control {flags} "
         f">>{log_path} 2>&1 </dev/null & disown"
     )
     print(f"→ {alloc.node} (job {alloc.jobid}): agent '{name}' launched in background")

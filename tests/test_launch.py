@@ -77,13 +77,19 @@ def _patch_ssh(monkeypatch) -> dict:
     return captured
 
 
-def test_launch_shell_runs_bash_over_ssh(monkeypatch, cfg: Config) -> None:
+def test_launch_shell_wraps_with_srun_jobid_overlap(monkeypatch, cfg: Config) -> None:
+    """The shell must join the job's step via ``srun --jobid --overlap --pty``
+    so GPU cgroup + env (``CUDA_VISIBLE_DEVICES``) apply. Without the wrap
+    the user lands outside the allocation and sees every GPU on the node."""
     captured = _patch_ssh(monkeypatch)
     rc = launch.launch_shell(Allocation(node="g05", jobid="5555"), "/home/cizekto2", cfg)
     assert rc == 0
     assert captured["host"] == "g05"
-    assert captured["tty"] is True
-    assert "exec bash -i" in captured["cmd"]
+    assert captured["tty"] is True  # need -tt so srun --pty has a PTY
+    cmd = captured["cmd"]
+    assert "exec srun --jobid=5555 --overlap --pty bash -i" in cmd
+    # Bare ``bash -i`` (without srun) would be a regression.
+    assert "exec bash -i" not in cmd
 
 
 def test_launch_editor_uses_vscode_remote_uri(monkeypatch, cfg: Config) -> None:
@@ -115,7 +121,9 @@ def test_launch_agent_runs_detached_with_nohup(monkeypatch, cfg: Config) -> None
     cmd = captured["cmd"]
     assert "cd '/home/cizekto2/sam2rl'" in cmd
     assert "exec claude" not in cmd  # would replace the shell, blocking ssh
-    assert "nohup claude remote-control" in cmd
+    # Wrapped with srun so claude runs as a step of the allocation —
+    # gets the right GPUs and lives in the job's cgroup.
+    assert "nohup srun --jobid=5555 --overlap claude remote-control" in cmd
     assert "& disown" in cmd
     assert "</dev/null" in cmd
     assert ">>$HOME/.rci/agent-logs/agent-2.log 2>&1" in cmd

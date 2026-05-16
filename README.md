@@ -93,6 +93,24 @@ fall back to `--help`.
 - relative → resolved under `cfg.home` (`rci shell myproj` → `<home>/myproj`)
 - absolute → used as-is
 
+**Job-step wrapping.** `rci shell` and `rci agent` enter the allocation via
+`srun --jobid=<id> --overlap` after the ssh hop, so the spawned process
+joins the job's cgroup and inherits its environment (`CUDA_VISIBLE_DEVICES`,
+CPU affinity, memory limits, etc.). Without this wrap you'd land on the
+node *outside* the allocation and `nvidia-smi` would show every GPU on
+the host — meaning you could grab one that belongs to another user's job.
+
+**`rci editor` caveat.** VS Code Remote-SSH owns its SSH command end-to-end,
+so we can't inject `srun` — `vscode-server` runs *outside* the job's cgroup.
+For pure editing (files, language servers, git) this is harmless; vscode-server
+itself doesn't touch the GPU. But anything you launch *from inside* VS Code —
+integrated-terminal commands, Jupyter notebook cells, the "Run Python File"
+button, build tasks — inherits the un-cgrouped env and would see every GPU
+on the node. If you run ML/GPU code from VS Code, either wrap it manually
+(`srun --jobid=$SLURM_JOB_ID --overlap …` in the terminal, or set
+`CUDA_VISIBLE_DEVICES=0` for one-off scripts) or run it via `rci shell`
+in a separate window.
+
 Persistence across ssh disconnect isn't wrapped at the rci-cli layer — run
 `tmux` or `screen` inside `rci shell` if you need it. The bare `rci` TUI
 itself runs locally and survives any ssh drop.
