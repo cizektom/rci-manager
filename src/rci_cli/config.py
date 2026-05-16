@@ -34,8 +34,14 @@ class Config:
     ssh_host: str = "rci"
     cpu_partition: str = "cpufast"
     gpu_partition: str = "gpufast"
-    cpu_job_name: str = "dev"
-    gpu_job_name: str = "dev-gpu"
+    # Name prefix for jobs spawned from Submit / Connect / ``rci cpu`` / ``rci gpu``.
+    # Each new spawn becomes ``<dev_job_name>-N`` with N = lowest unused suffix
+    # among currently active jobs; cancelled numbers get reused.
+    dev_job_name: str = "dev"
+    # Singleton name for jobs spawned from the Editor flow. There's at most one
+    # editor allocation at a time (subsequent Editor presses attach to it),
+    # so no numbering suffix is needed.
+    editor_job_name: str = "editor"
     # Conservative debug defaults — schedule fast, don't burn quota if you forget one.
     # Override per-allocation with --cores/--mem/--time or globally in ~/.config/rci-cli/config.toml.
     cpu_defaults: tuple[int, int, str] = (2, 4, "1:00:00")  # cores, memGB, walltime

@@ -54,25 +54,27 @@ def test_cancel_with_missing_job_fails(monkeypatch) -> None:
 def test_cpu_passes_defaults_to_submit(monkeypatch) -> None:
     seen = {}
 
-    def fake_submit(cfg, cores, mem, walltime):
-        seen.update({"cores": cores, "mem": mem, "walltime": walltime})
+    def fake_submit(cfg, cores, mem, walltime, *, job_name, partition=None):
+        seen.update({"cores": cores, "mem": mem, "walltime": walltime, "job_name": job_name})
         return "Granted job allocation 7777"
 
     monkeypatch.setattr(slurm, "submit_cpu", fake_submit)
+    monkeypatch.setattr(slurm, "next_indexed_name", lambda cfg, pfx: f"{pfx}-1")
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
     result = runner.invoke(app, ["cpu"])
     assert result.exit_code == 0
-    assert seen == {"cores": 2, "mem": 4, "walltime": "1:00:00"}
+    assert seen == {"cores": 2, "mem": 4, "walltime": "1:00:00", "job_name": "dev-1"}
 
 
 def test_cpu_flags_override_defaults(monkeypatch) -> None:
     seen = {}
 
-    def fake_submit(cfg, cores, mem, walltime):
+    def fake_submit(cfg, cores, mem, walltime, *, job_name, partition=None):
         seen.update({"cores": cores, "mem": mem, "walltime": walltime})
         return ""
 
     monkeypatch.setattr(slurm, "submit_cpu", fake_submit)
+    monkeypatch.setattr(slurm, "next_indexed_name", lambda cfg, pfx: f"{pfx}-1")
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
     result = runner.invoke(app, ["cpu", "--cores", "16", "--mem", "64", "--time", "2:00:00"])
     assert result.exit_code == 0
@@ -82,19 +84,35 @@ def test_cpu_flags_override_defaults(monkeypatch) -> None:
 def test_gpu_defaults(monkeypatch) -> None:
     seen = {}
 
-    def fake_submit(cfg, gpus, cores, mem, walltime):
-        seen.update({"gpus": gpus, "cores": cores, "mem": mem, "walltime": walltime})
+    def fake_submit(cfg, gpus, cores, mem, walltime, *, job_name, partition=None):
+        seen.update({
+            "gpus": gpus, "cores": cores, "mem": mem,
+            "walltime": walltime, "job_name": job_name,
+        })
         return ""
 
     monkeypatch.setattr(slurm, "submit_gpu", fake_submit)
+    monkeypatch.setattr(slurm, "next_indexed_name", lambda cfg, pfx: f"{pfx}-2")
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
     result = runner.invoke(app, ["gpu"])
     assert result.exit_code == 0
-    assert seen == {"gpus": 1, "cores": 2, "mem": 8, "walltime": "1:00:00"}
+    # Shared dev pool with rci cpu — number comes from next_indexed_name.
+    assert seen == {
+        "gpus": 1, "cores": 2, "mem": 8,
+        "walltime": "1:00:00", "job_name": "dev-2",
+    }
 
 
 def test_alloc_prints_node_and_jobid(monkeypatch) -> None:
-    monkeypatch.setattr(slurm, "jobs_by_name", lambda cfg, name, state="RUNNING": ["5555"] if name == "dev-gpu" else [])
+    """`rci alloc` reuses a running rci-managed job, prefers GPU."""
+    gpu_job = slurm.Job(
+        jobid="5555", partition="gpufast", name="dev-1",
+        state="RUNNING", gres="gpu:1",
+    )
+    monkeypatch.setattr(
+        slurm, "jobs_by_prefix",
+        lambda cfg, prefix, state="RUNNING": [gpu_job] if prefix == "dev" else [],
+    )
     monkeypatch.setattr(slurm, "node_for", lambda cfg, jid: "g05")
     result = runner.invoke(app, ["alloc"])
     assert result.exit_code == 0

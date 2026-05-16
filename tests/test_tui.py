@@ -242,8 +242,9 @@ async def test_after_folder_with_no_usable_row_pushes_new_instance_modal(monkeyp
         assert isinstance(app.screen, NewInstanceModal)
 
 
-async def test_after_folder_with_pending_row_pushes_new_instance_modal(monkeypatch) -> None:
-    """A PENDING row can't be ssh'd into → fall through to the New Instance modal."""
+async def test_after_folder_with_pending_row_notifies_and_aborts(monkeypatch) -> None:
+    """Highlighted PENDING row → toast and stop. Don't silently spawn a new job
+    behind the user's back (would surprise: they were trying to attach)."""
     from rci_cli.tui import NewInstanceModal
 
     monkeypatch.setattr(
@@ -255,9 +256,19 @@ async def test_after_folder_with_pending_row_pushes_new_instance_modal(monkeypat
         ),
     )
 
+    notifications: list[tuple[str, str]] = []
+
     app = RciApp()
     async with app.run_test() as pilot:
         await pilot.pause()
+        original_notify = app.notify
+
+        def capture(message, *, severity="information", timeout=5, **kw):
+            notifications.append((severity, str(message)))
+            return original_notify(message, severity=severity, timeout=timeout, **kw)
+
+        monkeypatch.setattr(app, "notify", capture)
+
         panel = app.query_one(JobsPanel)
         for _ in range(60):
             if panel._rows:
@@ -265,7 +276,11 @@ async def test_after_folder_with_pending_row_pushes_new_instance_modal(monkeypat
             await pilot.pause(0.05)
         panel._after_folder("shell", "")
         await pilot.pause()
-        assert isinstance(app.screen, NewInstanceModal)
+        assert not isinstance(app.screen, NewInstanceModal), \
+            "pending row must not silently fall through to New Instance"
+        assert any(
+            sev == "warning" and "can't attach" in msg for sev, msg in notifications
+        ), notifications
 
 
 async def test_folder_modal_prefills_last_folder(monkeypatch, tmp_path) -> None:
@@ -440,7 +455,7 @@ async def test_new_instance_modal_opens_with_no_widget_focused(monkeypatch, tmp_
         # "no inner widget" state). Either way, it must not be any of the
         # modal's form widgets or buttons.
         scr = app.screen
-        form_ids = {"partition-type", "partition-class", "cores", "gpus", "mem", "time", "ok", "cancel"}
+        form_ids = {"job-name", "partition-type", "partition-class", "cores", "gpus", "mem", "time", "ok", "cancel"}
         focused_id = getattr(app.focused, "id", None)
         assert focused_id not in form_ids, (
             f"expected no inner widget focused, got {focused_id}"
@@ -635,6 +650,133 @@ async def test_new_instance_modal_prefills_last_params(monkeypatch, tmp_path) ->
         assert scr.query_one("#time", Select).value == "8:00:00"
 
 
+async def test_new_instance_modal_prefills_default_name(monkeypatch, tmp_path) -> None:
+    """The Name Input is pre-filled with the caller-supplied suggestion (e.g. ``dev-3``)."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import NewInstanceModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config(), default_name="dev-3"), lambda _p: None)
+        await pilot.pause()
+        assert app.screen.query_one("#job-name", Input).value == "dev-3"
+
+
+async def test_new_instance_modal_blank_name_reverts_to_suggestion(
+    monkeypatch, tmp_path
+) -> None:
+    """Blanking the Name field doesn't submit a nameless job — it reverts to
+    the suggestion that was prefilled."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import AllocParams, NewInstanceModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    captured: dict[str, AllocParams | None] = {"params": None}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            NewInstanceModal(Config(), default_name="editor"),
+            lambda p: captured.update(params=p),
+        )
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#job-name", Input).value = ""  # user blanks it
+        scr._do_submit()
+        await pilot.pause()
+
+    p = captured["params"]
+    assert p is not None
+    assert p.job_name == "editor"
+
+
+async def test_new_instance_modal_custom_name_is_respected(
+    monkeypatch, tmp_path
+) -> None:
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import AllocParams, NewInstanceModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    captured: dict[str, AllocParams | None] = {"params": None}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            NewInstanceModal(Config(), default_name="dev-1"),
+            lambda p: captured.update(params=p),
+        )
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#job-name", Input).value = "my-experiment"
+        scr._do_submit()
+        await pilot.pause()
+
+    assert captured["params"].job_name == "my-experiment"
+
+
+async def test_editor_flow_suggests_singleton_editor_name(monkeypatch, tmp_path) -> None:
+    """Empty table + Editor action → New Instance modal pre-fills with ``editor``."""
+    from textual.widgets import Input
+
+    from rci_cli.tui import NewInstanceModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._after_folder("editor", "")
+        await pilot.pause()
+        assert isinstance(app.screen, NewInstanceModal)
+        assert app.screen.query_one("#job-name", Input).value == "editor"
+
+
+async def test_suggest_dev_name_uses_cached_rows_with_gap_reuse(monkeypatch) -> None:
+    """``_suggest_dev_name`` reuses the lowest gap in cached rows — no ssh
+    round-trip. Cancelled jobs naturally disappear from the cache so their
+    numbers come back into play."""
+    from rci_cli.config import Config
+    from rci_cli.tui import JobRow
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        cfg = Config()
+        # dev-1 and dev-3 are taken; dev-2 is the lowest unused.
+        panel._rows = [
+            JobRow(
+                jobid="111", partition="cpufast", name="dev-1", state="RUNNING",
+                time="0:05", limit="1:00:00", cpus="2", mem="4G", gres="N/A", node="n01",
+            ),
+            JobRow(
+                jobid="333", partition="cpufast", name="dev-3", state="RUNNING",
+                time="0:01", limit="1:00:00", cpus="2", mem="4G", gres="N/A", node="n03",
+            ),
+        ]
+        assert panel._suggest_dev_name(cfg) == "dev-2"
+        # Empty cache ⇒ start at dev-1.
+        panel._rows = []
+        assert panel._suggest_dev_name(cfg) == "dev-1"
+
+
 async def test_new_instance_modal_submit_persists_params(monkeypatch, tmp_path) -> None:
     """Submitting must write the form values to state so the next open prefills them."""
     from rci_cli import state
@@ -741,7 +883,7 @@ async def test_new_instance_submit_surfaces_salloc_error_not_fake_success(monkey
     )
     monkeypatch.setattr(
         slurm, "submit_cpu",
-        lambda cfg, cores, mem, time, partition=None: error_out,
+        lambda cfg, cores, mem, time, *, job_name, partition=None: error_out,
     )
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
 

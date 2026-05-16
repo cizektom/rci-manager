@@ -51,10 +51,17 @@ def _cfg() -> Config:
     return cfg
 
 
-def _require_alloc(cfg: Config, *, require_gpu: bool = False) -> alloc_mod.Allocation:
+def _require_alloc(
+    cfg: Config,
+    *,
+    require_gpu: bool = False,
+    spawn_name: str | None = None,
+) -> alloc_mod.Allocation:
     """Either pick an existing allocation or submit one. Exits on failure."""
     try:
-        return alloc_mod.select_or_submit(cfg, require_gpu=require_gpu)
+        return alloc_mod.select_or_submit(
+            cfg, require_gpu=require_gpu, spawn_name=spawn_name
+        )
     except alloc_mod.AllocationError as e:
         rprint(f"[red]{e}[/red]")
         raise typer.Exit(code=1) from e
@@ -86,7 +93,7 @@ def cpu(
     mem: Annotated[int, typer.Option("-m", "--mem", help="memory in GB")] = -1,
     time: Annotated[str, typer.Option("-t", "--time", help="walltime, e.g. 4:00:00")] = "",
 ) -> None:
-    """Submit a CPU allocation."""
+    """Submit a CPU allocation. Names it ``dev-N`` (lowest unused N)."""
     cfg = _cfg()
     d_cores, d_mem, d_time = cfg.cpu_defaults
     out = slurm.submit_cpu(
@@ -94,6 +101,7 @@ def cpu(
         cores if cores > 0 else d_cores,
         mem if mem > 0 else d_mem,
         time or d_time,
+        job_name=slurm.next_indexed_name(cfg, cfg.dev_job_name),
     )
     typer.echo(out)
     typer.echo()
@@ -107,7 +115,7 @@ def gpu(
     mem: Annotated[int, typer.Option("-m", "--mem", help="memory in GB")] = -1,
     time: Annotated[str, typer.Option("-t", "--time", help="walltime, e.g. 4:00:00")] = "",
 ) -> None:
-    """Submit a GPU allocation."""
+    """Submit a GPU allocation. Names it ``dev-N`` (same pool as ``rci cpu``)."""
     cfg = _cfg()
     d_gpus, d_cores, d_mem, d_time = cfg.gpu_defaults
     out = slurm.submit_gpu(
@@ -116,6 +124,7 @@ def gpu(
         cores if cores > 0 else d_cores,
         mem if mem > 0 else d_mem,
         time or d_time,
+        job_name=slurm.next_indexed_name(cfg, cfg.dev_job_name),
     )
     typer.echo(out)
     typer.echo()
@@ -164,21 +173,21 @@ def cancel_all() -> None:
 
 @app.command("cancel-dev")
 def cancel_dev() -> None:
-    """Cancel all rci-cli managed allocations (``dev`` / ``dev-gpu``)."""
+    """Cancel all rci-cli managed allocations (``dev*`` + ``editor``)."""
     cfg = _cfg()
-    ids = slurm.jobs_by_name(cfg, cfg.cpu_job_name, state="RUNNING") + slurm.jobs_by_name(
-        cfg, cfg.gpu_job_name, state="RUNNING"
+    jobs = slurm.jobs_by_prefix(cfg, cfg.dev_job_name) + slurm.jobs_by_prefix(
+        cfg, cfg.editor_job_name
     )
-    if not ids:
+    if not jobs:
         rprint("No rci-managed allocations to cancel.")
         return
     rprint("[bold]Will cancel these allocations:[/bold]")
-    for jid in ids:
-        rprint(f"  {jid}")
+    for j in jobs:
+        rprint(f"  {j.jobid}  {j.name}")
     if not _confirm("Proceed? [y/N] "):
         rprint("Aborted.")
         raise typer.Exit(code=1)
-    rc = slurm.cancel_by_names(cfg, [cfg.cpu_job_name, cfg.gpu_job_name])
+    rc = slurm.cancel_jobids(cfg, [j.jobid for j in jobs])
     rprint("Done." if rc == 0 else f"[red]scancel exited {rc}[/red]")
     raise typer.Exit(code=rc)
 
@@ -188,9 +197,13 @@ def editor(
     folder: Annotated[str, typer.Argument()] = "",
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
 ) -> None:
-    """Open the configured editor (VS Code Remote-SSH) on the strongest existing allocation."""
+    """Open the configured editor (VS Code Remote-SSH) on the strongest existing allocation.
+
+    Spawns a singleton ``editor`` allocation when none is available — subsequent
+    invocations reuse it.
+    """
     cfg = _cfg()
-    a = _require_alloc(cfg, require_gpu=gpu)
+    a = _require_alloc(cfg, require_gpu=gpu, spawn_name=cfg.editor_job_name)
     sys.exit(launch.launch_editor(a, launch.resolve_folder(folder, cfg), cfg))
 
 

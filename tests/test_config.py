@@ -25,8 +25,8 @@ def test_cluster_defaults_match_rci() -> None:
     assert c.ssh_host == "rci"
     assert c.cpu_partition == "cpufast"
     assert c.gpu_partition == "gpufast"
-    assert c.cpu_job_name == "dev"
-    assert c.gpu_job_name == "dev-gpu"
+    assert c.dev_job_name == "dev"
+    assert c.editor_job_name == "editor"
     assert c.cpu_defaults == (2, 4, "1:00:00")
     assert c.gpu_defaults == (1, 2, 8, "1:00:00")
     assert c.partition_types == ("cpu", "gpu", "amdgpu", "h200")

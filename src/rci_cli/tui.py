@@ -113,6 +113,7 @@ class AllocParams:
     gpus: int  # 0 → CPU job (dispatches to slurm.submit_cpu); else GPU job
     mem_gb: int
     walltime: str
+    job_name: str = ""
 
     @property
     def kind(self) -> str:
@@ -221,7 +222,13 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         Binding("enter", "submit", "Submit", show=False),
     ]
 
-    def __init__(self, cfg: Config, *, allow_back: bool = False) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        allow_back: bool = False,
+        default_name: str = "",
+    ) -> None:
         super().__init__()
         self.cfg = cfg
         # When True, ``q``/``escape`` dismisses with the ``"back"`` sentinel
@@ -229,6 +236,11 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # False for the standalone ``n`` flow where there's nothing to step
         # back to.
         self.allow_back = allow_back
+        # Suggested job name (e.g. ``dev-3`` or ``editor``). Shown in the Name
+        # input pre-filled; the user can override or blank it (blank reverts
+        # to this suggestion on submit). Empty string falls back to
+        # ``cfg.dev_job_name`` so the modal still has *some* name to submit.
+        self._default_name = default_name or cfg.dev_job_name
         # Pre-fill from the last submitted params (persisted across sessions),
         # falling back to ``Config`` defaults if nothing's saved or a field
         # got corrupted. Validate enum-like fields so a stale state.json
@@ -275,6 +287,12 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # that arrow-key scrolling inside the container isn't needed.
         with VerticalScroll(id="modal-box", can_focus=False):
             yield Label("[b]Resources[/b]", id="modal-title")
+            yield Label("Job name")
+            yield Input(
+                value=self._default_name,
+                id="job-name",
+                placeholder=self._default_name,
+            )
             yield Label("Partition")
             with Horizontal(id="partition-row"):
                 yield Select(
@@ -375,11 +393,16 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         except ValueError:
             self.app.notify("Invalid number", severity="error")
             return
+        # Job name: free-text Input; blank reverts to the suggestion so
+        # there's no way to submit a nameless job.
+        name = self.query_one("#job-name", Input).value.strip() or self._default_name
         err = validate_alloc(ptype, gpus, self.cfg.gpu_partition_types)
         if err is not None:
             self.app.notify(err, severity="error", timeout=6)
             return
         # Persist so the next session opens the modal prefilled with these values.
+        # ``job_name`` is intentionally *not* persisted — it should re-suggest
+        # the next free index on each open, not stick on the last value.
         state.set_last_instance_params(
             partition_type=ptype,
             partition_class=pclass,
@@ -395,6 +418,7 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
                 gpus=gpus,
                 mem_gb=mem_gb,
                 walltime=walltime,
+                job_name=name,
             )
         )
 
@@ -863,9 +887,17 @@ class JobsPanel(Container):
         if folder is None:
             return  # user cancelled the folder prompt
         cfg = load()
-        # Use whichever job the cursor's on, if it's a running node. With
-        # per-allocation names there's no canonical "the" allocation to
-        # auto-pick — the user is expected to highlight the one they want.
+        # Block early when the highlighted row exists but isn't connectable
+        # (pending) — silently falling through to the New Instance modal made
+        # it look like the action was ignored.
+        row = self._selected_row()
+        if row is not None and row.state not in RUNNING_STATES:
+            self.app.notify(
+                f"Job {row.jobid} is {row.state.lower()} — can't attach yet.",
+                severity="warning",
+                timeout=4,
+            )
+            return
         alloc = self._alloc_from_selected_row()
         if alloc is not None:
             self._attach_to(kind, alloc, folder)
@@ -873,10 +905,22 @@ class JobsPanel(Container):
         # No usable selection — collect alloc params, submit, attach. Opt
         # into ``allow_back`` so q/escape on the resources modal returns
         # to the folder picker instead of dropping the whole flow.
+        # The Editor flow spawns the singleton ``editor`` (only ever one);
+        # everything else spawns ``dev-N`` with N = lowest unused suffix
+        # among current jobs.
+        if kind == "editor":
+            default_name = cfg.editor_job_name
+        else:
+            default_name = self._suggest_dev_name(cfg)
         self.app.push_screen(
-            NewInstanceModal(cfg, allow_back=True),
+            NewInstanceModal(cfg, allow_back=True, default_name=default_name),
             lambda result: self._after_new_instance(kind, folder, result),
         )
+
+    def _suggest_dev_name(self, cfg: Config) -> str:
+        """Compute the next ``dev-N`` from the cached row set — no ssh round-trip."""
+        n = slurm.lowest_unused_index((r.name for r in self._rows), cfg.dev_job_name)
+        return f"{cfg.dev_job_name}-{n}"
 
     def _after_new_instance(
         self, kind: str, folder: str, result: "AllocParams | str | None"
@@ -932,15 +976,18 @@ class JobsPanel(Container):
     def _do_submit_and_attach(self, kind: str, params: AllocParams, folder: str) -> None:
         import time
         cfg = load()
+        name = params.job_name or cfg.dev_job_name
         try:
             if params.gpus > 0:
                 out = slurm.submit_gpu(
                     cfg, params.gpus, params.cores, params.mem_gb, params.walltime,
+                    job_name=name,
                     partition=params.partition or None,
                 )
             else:
                 out = slurm.submit_cpu(
                     cfg, params.cores, params.mem_gb, params.walltime,
+                    job_name=name,
                     partition=params.partition or None,
                 )
         except Exception as e:  # noqa: BLE001
@@ -983,7 +1030,11 @@ class JobsPanel(Container):
     # ----- new instance only (no auto-attach) -----
 
     def action_new_instance(self) -> None:
-        self.app.push_screen(NewInstanceModal(load()), self._on_new_instance)
+        cfg = load()
+        self.app.push_screen(
+            NewInstanceModal(cfg, default_name=self._suggest_dev_name(cfg)),
+            self._on_new_instance,
+        )
 
     def _on_new_instance(self, params: AllocParams | None) -> None:
         if params is None:
@@ -996,15 +1047,18 @@ class JobsPanel(Container):
     @work(thread=True, group="action")
     def _do_submit(self, params: AllocParams) -> None:
         cfg = load()
+        name = params.job_name or cfg.dev_job_name
         try:
             if params.kind == "cpu":
                 out = slurm.submit_cpu(
                     cfg, params.cores, params.mem_gb, params.walltime,
+                    job_name=name,
                     partition=params.partition or None,
                 )
             else:
                 out = slurm.submit_gpu(
                     cfg, params.gpus, params.cores, params.mem_gb, params.walltime,
+                    job_name=name,
                     partition=params.partition or None,
                 )
         except Exception as e:  # noqa: BLE001

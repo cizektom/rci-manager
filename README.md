@@ -78,7 +78,7 @@ fall back to `--help`.
 | `rci gpu`                            | submit a GPU `dev-gpu` allocation — `-g -c -m -t`  |
 | `rci cancel JOBID`                   | cancel a single job (confirms first if running)    |
 | `rci cancel-all`                     | cancel ALL your jobs (confirms)                    |
-| `rci cancel-dev`                     | cancel all rci-managed `dev` / `dev-gpu` jobs      |
+| `rci cancel-dev`                     | cancel all rci-managed jobs (`dev*` + `editor`)    |
 | `rci shell  [DIR] [--gpu]`           | interactive bash on the compute node               |
 | `rci editor [DIR] [--gpu]`           | VS Code Remote-SSH (WSL → Windows `code.cmd`)      |
 | `rci alloc  [--gpu]`                 | prints `<node> <jobid>` — scripting-friendly       |
@@ -137,6 +137,7 @@ Bare `rci` opens the dashboard:
 
 ```
 ┌─ New instance ────────────────────────────────┐
+│ Job name   [dev-2          ]                  │
 │ Partition                                     │
 │ [cpu     ▾]  [fast    ▾]                      │
 │ Cores      [2     ]                           │
@@ -146,6 +147,11 @@ Bare `rci` opens the dashboard:
 │                          [Submit] [Cancel]    │
 └───────────────────────────────────────────────┘
 ```
+
+- **Job name** is pre-filled with a suggestion: `dev-N` for Submit/Connect
+  (lowest unused N — cancelled numbers come back into play) or `editor` for
+  the Editor flow (singleton, no number). Blanking the field reverts to the
+  suggestion; otherwise type whatever you like (e.g. `train-llama`).
 
 - **No widget is focused on open.** Press **Enter** to submit the prefilled
   defaults (last-used params, or `cfg.cpu_defaults` / `gpu_defaults`).
@@ -183,9 +189,13 @@ home = "/home/jdoe2"
 cpu_partition = "cpufast"
 gpu_partition = "gpufast"
 
-# Job names used by ``rci cancel-dev`` and ``alloc.select_or_submit``.
-cpu_job_name = "dev"
-gpu_job_name = "dev-gpu"
+# Job-name prefixes for rci-managed allocations. Anything spawned by Submit /
+# Connect / ``rci cpu`` / ``rci gpu`` becomes ``<dev_job_name>-N`` (lowest
+# unused N — cancelled numbers are reused). The Editor flow spawns a singleton
+# ``<editor_job_name>`` (no number) since there's only ever one at a time.
+# ``rci cancel-dev`` matches both prefixes.
+dev_job_name = "dev"
+editor_job_name = "editor"
 
 # Resource defaults — kept conservative so a forgotten allocation doesn't
 # burn quota. Override per-call with --cores / --mem / --time / --gpus.
