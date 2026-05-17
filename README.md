@@ -164,7 +164,7 @@ Bare `rci` opens the dashboard:
 │ 1234568  dev-gpu  ·  RUNNING  on  gpufast  ·  8 CPU · 32G · 1 GPU
 │ ·  used 00:10 / limit 04:00:00  ·  node g05                     │
 ├────────────────────────────────────────────────────────────────┤
-│ l Login  s Submit  c Connect  e Editor  k Kill  r Refresh  q Quit
+│ f Frontend  s Submit  c Connect  e Editor  a Agent  r Refresh  d Delete  q Quit
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -172,14 +172,17 @@ Bare `rci` opens the dashboard:
 
 | key | action |
 |-----|--------|
-| `l` | **Login** — open a shell on the cluster login host |
+| `f` | **Frontend** — open a shell on the cluster login host |
 | `s` | **Submit** — open the New Instance modal to spawn a new allocation |
 | `c` | **Connect** — shell into the highlighted job's compute node (prompts for folder first) |
 | `e` | **Editor** — VS Code Remote-SSH against the highlighted job (prompts for folder first) |
 | `a` | **Agent** — spawn a new `agent-N` and run `claude remote-control` (folder → agent options → resources) |
-| `k` | **Kill** — cancel the highlighted job (confirmation modal, default ✕ No) |
+| `d` | **Delete** — cancel the highlighted job (confirmation modal, default ✕ No) |
 | `r` | force-refresh the table (also auto-refreshes every 5s) |
-| `↑/↓` | navigate rows; the detail line updates live |
+| `↑/↓` or `j`/`k` | navigate rows; the detail line updates live |
+| `←/→` or `h`/`l` | scroll the table horizontally when columns overflow |
+| `g` / `G` | jump to first / last row (single-key, no `gg` chord) |
+| `/` | filter rows live — substring match on jobid/name/state/partition. `Enter` commits the filter (keeps it active, returns focus to the table); `Esc` clears |
 | `t` | cycle theme (`ansi-dark` ↔ `textual-dark`) |
 | `q` / `Ctrl+C` | quit |
 
@@ -218,6 +221,9 @@ from the Slurm ones:
   defaults (last-used params, or `cfg.cpu_defaults` / `gpu_defaults`).
 - **Tab** walks the form starting at partition-type. Inside the form, **Enter**
   opens dropdowns (Select) or advances to the next field (Input).
+- Inside an **open dropdown**: `↑`/`↓` or `j`/`k` to move the highlight,
+  `g`/`G` to jump to the first/last option, **Enter** to commit, **Esc**
+  to close without selecting. (Type-to-search is off — every list is short.)
 - The partition is composed of two Selects: a **type** (`cpu` / `gpu` /
   `amdgpu` / `h200`) and a **class** (`fast` / `(normal)` / `long` /
   `extralong`). All 16 combinations match what the RCI cluster offers.
@@ -225,7 +231,7 @@ from the Slurm ones:
   with `cpu` selected is rejected with a clear toast.
 - `q` / Esc close the modal from anywhere.
 
-**Confirmation modal** (Kill, etc.):
+**Confirmation modal** (Delete, etc.):
 
 - Always opens with focus on **No** — pressing Enter on reflex never confirms
   a destructive action.

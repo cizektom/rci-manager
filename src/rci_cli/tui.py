@@ -24,6 +24,7 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    OptionList,
     Select,
     Static,
 )
@@ -39,6 +40,61 @@ ACTION_FADE_SECONDS = 6.0  # how long the inline action log lingers before auto-
 # squeue's ``%T`` long-form yields ``RUNNING``/``PENDING``/…; some setups still use
 # the short codes (``R``/``PD``). Accept both so the action guards are robust.
 RUNNING_STATES = frozenset({"R", "RUNNING"})
+
+
+# ──────────────────────────── widgets ───────────────────────────────────────
+
+
+class VimSelect(Select):
+    """``Select`` with vim-style navigation inside the open dropdown.
+
+    Adds ``j``/``k``/``g``/``G`` as cursor-down/up/first/last while the
+    dropdown is open. When the Select is collapsed the actions are no-ops,
+    so j/k don't fire from a closed-but-focused Select (a vim user pressing
+    j there expects nothing — they haven't opened the menu yet).
+
+    Trade-off: Textual's stock ``SelectOverlay`` consumes every printable
+    key for type-to-search (typing "g" jumps to the first option matching
+    "g"). That consumption stops printable keys from reaching our bindings,
+    so type-to-search is disabled here (``type_to_search=False``). Acceptable
+    for this TUI because every Select has a short fixed list (≤ 5 options)
+    where Tab + arrow keys / j/k are faster than partial typing anyway.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("j", "vim_down", show=False),
+        Binding("k", "vim_up", show=False),
+        Binding("g", "vim_top", show=False),
+        Binding("G", "vim_bottom", show=False),
+    ]
+
+    def __init__(self, *args, **kwargs) -> None:
+        # Force type-to-search off so the overlay doesn't swallow ``j``/``k``
+        # via its printable-key handler before our bindings see them.
+        kwargs.setdefault("type_to_search", False)
+        super().__init__(*args, **kwargs)
+
+    def _overlay(self) -> OptionList | None:
+        # The expanded dropdown is an ``OptionList`` child (``SelectOverlay``
+        # subclasses it). Avoid importing the private ``SelectOverlay`` name
+        # by matching on the public base class instead.
+        return next(iter(self.query(OptionList)), None)
+
+    def action_vim_down(self) -> None:
+        if self.expanded and (ov := self._overlay()) is not None:
+            ov.action_cursor_down()
+
+    def action_vim_up(self) -> None:
+        if self.expanded and (ov := self._overlay()) is not None:
+            ov.action_cursor_up()
+
+    def action_vim_top(self) -> None:
+        if self.expanded and (ov := self._overlay()) is not None:
+            ov.action_first()
+
+    def action_vim_bottom(self) -> None:
+        if self.expanded and (ov := self._overlay()) is not None:
+            ov.action_last()
 
 
 # ──────────────────────────── modals ────────────────────────────────────────
@@ -310,13 +366,13 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
             )
             yield Label("Partition")
             with Horizontal(id="partition-row"):
-                yield Select(
+                yield VimSelect(
                     [(t, t) for t in self.cfg.partition_types],
                     value=self._init_ptype,
                     id="partition-type",
                     allow_blank=False,
                 )
-                yield Select(
+                yield VimSelect(
                     list(self.cfg.partition_classes),
                     value=self._init_pclass,
                     id="partition-class",
@@ -336,7 +392,7 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
             time_options = list(WALLTIME_PRESETS)
             if self._init_time and self._init_time not in time_options:
                 time_options.insert(0, self._init_time)
-            yield Select(
+            yield VimSelect(
                 [(t, t) for t in time_options],
                 value=self._init_time,
                 id="time",
@@ -512,14 +568,14 @@ class AgentOptionsModal(ModalScreen["AgentOptions | str | None"]):
         with VerticalScroll(id="modal-box", can_focus=False):
             yield Label("[b]Agent options[/b]", id="modal-title")
             yield Label("Permission mode")
-            yield Select(
+            yield VimSelect(
                 [(m, m) for m in PERMISSION_MODES],
                 value=self._init_permission,
                 id="agent-permission-mode",
                 allow_blank=False,
             )
             yield Label("Spawn")
-            yield Select(
+            yield VimSelect(
                 [(m, m) for m in SPAWN_MODES],
                 value=self._init_spawn,
                 id="agent-spawn-mode",
@@ -781,22 +837,49 @@ class JobsPanel(Container):
     """Live jobs dashboard with action keys."""
 
     # Order = footer order. Reads as a workflow story left-to-right: get onto
-    # the cluster (Login) → submit a job (Submit) → connect to it (Connect) →
-    # open in an editor (Editor) → maintenance (Refresh) → destructive (Kill).
-    # Every label is cued by its key letter so the footer reads as a menu.
+    # the cluster (Frontend) → submit a job (Submit) → connect to it (Connect)
+    # → open in an editor (Editor) → spawn agent (Agent) → maintenance
+    # (Refresh) → destructive (Delete). Every label is cued by its key letter
+    # so the footer reads as a menu. ``hjkl`` are kept off the action list
+    # (`k`/`l` would collide with vim-style row movement) and bound below as
+    # hidden navigation shortcuts.
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("l", "shell_frontend", "Login"),
+        Binding("f", "shell_frontend", "Frontend"),
         Binding("s", "new_instance", "Submit"),
         Binding("c", "shell_into", "Connect"),
         Binding("e", "editor_into", "Editor"),
         Binding("a", "agent_into", "Agent"),
         Binding("r", "refresh", "Refresh"),
-        Binding("k", "cancel_job", "Kill"),
+        Binding("d", "cancel_job", "Delete"),
+        # vim-style row navigation, hidden from the footer to keep the action
+        # menu compact. j/k move the row cursor; h/l scroll horizontally when
+        # the table is wider than the viewport (no-op otherwise in row mode);
+        # g/G jump to the first/last row (single-key form, not the gg chord —
+        # consistent with k9s/lazygit and avoids tracking key state).
+        Binding("j", "cursor_down", show=False),
+        Binding("k", "cursor_up", show=False),
+        Binding("h", "cursor_left", show=False),
+        Binding("l", "cursor_right", show=False),
+        Binding("g", "cursor_top", show=False),
+        Binding("G", "cursor_bottom", show=False),
+        # Incremental filter: ``/`` opens an inline Input below the table.
+        # Typing filters live (substring match on jobid/name/state/partition);
+        # Enter commits and hands focus back to the table with the filter
+        # still active; Escape clears it. ``escape`` is priority so it fires
+        # while the Input itself has focus.
+        Binding("/", "start_filter", show=False),
+        Binding("escape", "cancel_filter", show=False, priority=True),
     ]
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        # ``_rows`` is the full squeue snapshot; ``_visible_rows`` is what's
+        # currently rendered after applying ``_filter``. Keeping both lets
+        # the status line count the full set ("3 running") while the table
+        # and the cursor-selection helpers operate on the filtered view.
         self._rows: list[JobRow] = []
+        self._visible_rows: list[JobRow] = []
+        self._filter: str = ""
         self._last_action: str = ""
         self._action_clear_timer = None  # type: ignore[var-annotated]
         # Carries the AgentOptions across the agent flow's 3 modal hops so
@@ -810,6 +893,9 @@ class JobsPanel(Container):
             yield Static("Loading…", id="alloc-status")
             yield DataTable(id="jobs-table", zebra_stripes=True, cursor_type="row")
             yield Static("", id="job-detail")
+            # Hidden until the user presses ``/``. Placeholder doubles as
+            # in-place help so the keys are discoverable on first open.
+            yield Input(placeholder="filter…  enter=apply  esc=clear", id="filter-input")
             yield Static("", id="last-action")
 
     def on_mount(self) -> None:
@@ -827,6 +913,10 @@ class JobsPanel(Container):
             "Node",
         )
         table.focus()
+        # Filter input is hidden until ``/`` reveals it; toggling ``display``
+        # collapses it out of the layout entirely so the panel looks identical
+        # to the pre-filter layout when no search is active.
+        self.query_one("#filter-input", Input).display = False
         self.refresh_jobs()
         self.set_interval(REFRESH_INTERVAL, self.refresh_jobs)
 
@@ -853,34 +943,19 @@ class JobsPanel(Container):
         self.app.call_from_thread(self._apply_rows, rows)
 
     def _apply_rows(self, rows: list[JobRow]) -> None:
-        prior = self._selected_jobid()
-        table = self.query_one("#jobs-table", DataTable)
-        table.clear()
-        for r in rows:
-            table.add_row(
-                r.jobid,
-                r.partition,
-                r.name,
-                r.state,
-                r.time,
-                r.limit,
-                r.cpus or "—",
-                r.mem or "—",
-                r.gpu_count,
-                r.node_display,
-                key=r.jobid,
-            )
-        # Update the detail line for the (re-)selected row, if any.
-        self._refresh_detail()
+        """Stash the latest squeue snapshot and trigger a render.
+
+        Kept narrow so the refresh worker has a single tiny call site; all
+        of the table-mutation work lives in :meth:`_render_rows`, which is
+        also what the filter handlers call to re-render without a new
+        squeue round-trip.
+        """
         self._rows = rows
-        if rows:
-            target = next((i for i, r in enumerate(rows) if r.jobid == prior), 0)
-            try:
-                table.move_cursor(row=target)
-            except Exception:  # noqa: BLE001
-                pass
-        # Summarize the table at a glance — there's no single "current"
-        # allocation now that names are per-job; we just count states.
+        self._render_rows()
+        # Status line counts the *full* snapshot, not the filtered view —
+        # ``N running`` shouldn't shrink just because you searched for one
+        # name. (Filter is incremental and constantly changing; a moving
+        # count would be noisy and uninformative.)
         running = sum(1 for r in rows if r.state in RUNNING_STATES)
         pending = len(rows) - running
         status = self.query_one("#alloc-status", Static)
@@ -896,14 +971,68 @@ class JobsPanel(Container):
         if self._last_action == "refreshing…":
             self._clear_action_log()
 
+    def _render_rows(self) -> None:
+        """Repaint the table from ``_rows`` honoring the active ``_filter``.
+
+        Preserves the highlighted job across re-renders by jobid (rather
+        than row index) so that filtering doesn't snap the cursor to an
+        unrelated row when the visible subset shifts.
+        """
+        prior = self._selected_jobid()
+        table = self.query_one("#jobs-table", DataTable)
+        table.clear()
+        self._visible_rows = self._apply_filter(self._rows)
+        for r in self._visible_rows:
+            table.add_row(
+                r.jobid,
+                r.partition,
+                r.name,
+                r.state,
+                r.time,
+                r.limit,
+                r.cpus or "—",
+                r.mem or "—",
+                r.gpu_count,
+                r.node_display,
+                key=r.jobid,
+            )
+        if self._visible_rows:
+            target = next(
+                (i for i, r in enumerate(self._visible_rows) if r.jobid == prior),
+                0,
+            )
+            try:
+                table.move_cursor(row=target)
+            except Exception:  # noqa: BLE001
+                pass
+        # Update the detail line for the (re-)selected row, if any.
+        self._refresh_detail()
+
+    def _apply_filter(self, rows: list[JobRow]) -> list[JobRow]:
+        """Substring match against the columns a user is most likely to
+        search by — jobid, name, state, partition. Case-insensitive."""
+        if not self._filter:
+            return list(rows)
+        q = self._filter.lower()
+        return [
+            r for r in rows
+            if q in r.jobid.lower()
+            or q in r.name.lower()
+            or q in r.state.lower()
+            or q in r.partition.lower()
+        ]
+
     # ----- selection helpers -----
 
     def _selected_row(self) -> JobRow | None:
+        # Indexes ``_visible_rows`` — what's actually rendered — so that an
+        # active filter doesn't desync the cursor position from the JobRow
+        # the user sees highlighted.
         table = self.query_one("#jobs-table", DataTable)
-        if not self._rows:
+        if not self._visible_rows:
             return None
         try:
-            return self._rows[table.cursor_row]
+            return self._visible_rows[table.cursor_row]
         except IndexError:
             return None
 
@@ -960,6 +1089,83 @@ class JobsPanel(Container):
     def action_refresh(self) -> None:
         self._notify_action("refreshing…")
         self.refresh_jobs()
+
+    # vim-key delegates to the inner DataTable. Bindings live on the panel
+    # (not the table) so they keep firing while modal callbacks momentarily
+    # steal focus, and so the screen-level vim mapping survives even if the
+    # table widget is rebuilt by ``_apply_rows``.
+    def action_cursor_down(self) -> None:
+        self.query_one("#jobs-table", DataTable).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#jobs-table", DataTable).action_cursor_up()
+
+    def action_cursor_left(self) -> None:
+        self.query_one("#jobs-table", DataTable).action_cursor_left()
+
+    def action_cursor_right(self) -> None:
+        self.query_one("#jobs-table", DataTable).action_cursor_right()
+
+    def action_cursor_top(self) -> None:
+        table = self.query_one("#jobs-table", DataTable)
+        if table.row_count:
+            table.move_cursor(row=0)
+
+    def action_cursor_bottom(self) -> None:
+        table = self.query_one("#jobs-table", DataTable)
+        if table.row_count:
+            table.move_cursor(row=table.row_count - 1)
+
+    # ----- filter (``/``) -----
+
+    def action_start_filter(self) -> None:
+        """Reveal the filter Input and hand it focus.
+
+        Pre-populates with the current filter so pressing ``/`` again is a
+        re-edit (vim's ``/`` reopens the last search), not a reset.
+        """
+        inp = self.query_one("#filter-input", Input)
+        inp.display = True
+        inp.value = self._filter
+        inp.focus()
+
+    def action_cancel_filter(self) -> None:
+        """Escape: clear any active filter and hide the Input.
+
+        Bound at priority=True on the panel so it fires even when the Input
+        itself is focused. When no filter is active and the Input is hidden,
+        this is a no-op (the binding still fires but does nothing visible).
+        """
+        inp = self.query_one("#filter-input", Input)
+        if not inp.display and not self._filter:
+            return
+        self._filter = ""
+        inp.value = ""
+        inp.display = False
+        self.query_one("#jobs-table", DataTable).focus()
+        self._render_rows()
+        self._notify_action("filter cleared")
+
+    @on(Input.Changed, "#filter-input")
+    def _on_filter_changed(self, event: Input.Changed) -> None:
+        # Live filter as the user types — instant feedback beats requiring
+        # Enter for each preview. The cost is one re-render per keystroke,
+        # which is cheap for the typical dozens-of-jobs case.
+        self._filter = event.value
+        self._render_rows()
+
+    @on(Input.Submitted, "#filter-input")
+    def _on_filter_submitted(self, event: Input.Submitted) -> None:
+        # Enter commits: hide the input but keep the filter active so the
+        # user can navigate the filtered view with j/k/d/c/etc. Escape (or
+        # ``/`` then clearing) is the way to drop the filter.
+        inp = self.query_one("#filter-input", Input)
+        inp.display = False
+        self.query_one("#jobs-table", DataTable).focus()
+        if self._filter:
+            self._notify_action(
+                f"filter: {self._filter}  ({len(self._visible_rows)}/{len(self._rows)})"
+            )
 
     def action_cancel_job(self) -> None:
         row = self._selected_row()
@@ -1368,6 +1574,18 @@ FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
     color: ansi_bright_black;
     background: ansi_default;
 }
+
+/* Inline filter bar — appears between #job-detail and #last-action when
+   the user hits ``/``. Visually a thin yellow-cued strip so it reads as
+   "interactive input area" rather than just another status line. */
+#filter-input {
+    height: 1;
+    padding: 0 1;
+    border: none;
+    background: ansi_default;
+    color: ansi_default;
+}
+#filter-input:focus { color: ansi_bright_white; }
 
 #jobs-table {
     height: 1fr;

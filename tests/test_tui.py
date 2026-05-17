@@ -482,6 +482,63 @@ async def test_new_instance_modal_initial_enter_submits_defaults(monkeypatch, tm
     assert isinstance(captured[0], AllocParams)
 
 
+async def test_vim_keys_navigate_open_select_dropdown(monkeypatch, tmp_path) -> None:
+    """VimSelect: with the dropdown open, j/k move the OptionList highlight,
+    G jumps to the last option. Closed-state j is a no-op."""
+    from textual.widgets import OptionList, Select
+
+    from rci_cli.tui import NewInstanceModal, VimSelect
+    from rci_cli.config import Config
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewInstanceModal(Config()), lambda _r: None)
+        await pilot.pause()
+        scr = app.screen
+        # The partition-type Select has at least 2 options so j has somewhere
+        # to move; default value puts the highlight on the first one.
+        select = scr.query_one("#partition-type", Select)
+        assert isinstance(select, VimSelect)
+
+        # Closed Select + j ⇒ no-op (dropdown stays closed, no error).
+        select.focus()
+        await pilot.pause()
+        assert not select.expanded
+        await pilot.press("j")
+        await pilot.pause()
+        assert not select.expanded
+
+        # Open the dropdown; capture the starting highlight then walk it.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert select.expanded
+        overlay = select.query_one(OptionList)
+        n_options = overlay.option_count
+        assert n_options >= 2, "test assumes >=2 partition types"
+        start = overlay.highlighted
+
+        await pilot.press("j")
+        await pilot.pause()
+        assert overlay.highlighted == start + 1
+
+        await pilot.press("k")
+        await pilot.pause()
+        assert overlay.highlighted == start
+
+        # Capital G jumps to the last option (Shift+g).
+        await pilot.press("G")
+        await pilot.pause()
+        assert overlay.highlighted == n_options - 1
+
+        # Lowercase g jumps back to the first.
+        await pilot.press("g")
+        await pilot.pause()
+        assert overlay.highlighted == 0
+
+
 async def test_new_instance_modal_enter_on_select_keeps_modal_open(monkeypatch, tmp_path) -> None:
     """Enter on a Select must not dismiss the modal — it opens the dropdown
     (or otherwise keeps the user in the form to pick an option)."""
@@ -904,6 +961,111 @@ async def test_new_instance_submit_surfaces_salloc_error_not_fake_success(monkey
     assert "Invalid partition" in panel._last_action, panel._last_action
     # The old bug surfaced "submitted: salloc: error: …" — make sure we don't.
     assert "submitted:" not in panel._last_action, panel._last_action
+
+
+async def test_filter_narrows_visible_rows(monkeypatch) -> None:
+    """``/`` filter does substring matching on jobid/name/state/partition;
+    Escape (``action_cancel_filter``) clears it and restores all rows."""
+    from textual.widgets import Input
+
+    monkeypatch.setattr(
+        slurm,
+        "list_jobs",
+        lambda cfg: (
+            "JOBID PARTITION NAME STATE TIME LIMIT CPU MEM GRES NODE\n"
+            "1234567 cpufast dev RUNNING 00:05 01:00:00 2 4G N/A n01\n"
+            "1234568 gpufast train RUNNING 00:10 04:00:00 8 32G gpu:1 g05\n"
+            "1234569 cpu train-llama PENDING 0:00 24:00:00 16 64G N/A (Resources)\n"
+        ),
+    )
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(5):
+            await pilot.pause(0.05)
+        panel = app.query_one(JobsPanel)
+        assert len(panel._visible_rows) == 3
+
+        # Setting Input.value triggers the panel's Input.Changed handler via
+        # Textual's reactive system; ``pause`` lets the message land.
+        panel.action_start_filter()
+        inp = panel.query_one("#filter-input", Input)
+        inp.value = "train"
+        await pilot.pause()
+        assert {r.name for r in panel._visible_rows} == {"train", "train-llama"}
+        # Full snapshot is untouched — status line still counts all 3.
+        assert len(panel._rows) == 3
+
+        panel.action_cancel_filter()
+        await pilot.pause()
+        assert panel._filter == ""
+        assert len(panel._visible_rows) == 3
+        assert inp.display is False
+
+
+async def test_filter_preserves_cursor_on_matching_row(monkeypatch) -> None:
+    """If the highlighted job survives the filter, the cursor follows it
+    rather than snapping to row 0 of the filtered view."""
+    from textual.widgets import DataTable
+
+    monkeypatch.setattr(
+        slurm,
+        "list_jobs",
+        lambda cfg: (
+            "JOBID PARTITION NAME STATE TIME LIMIT CPU MEM GRES NODE\n"
+            "1 cpufast alpha RUNNING 0:00 1:00:00 2 4G N/A n01\n"
+            "2 cpufast train RUNNING 0:00 1:00:00 2 4G N/A n02\n"
+            "3 cpufast zulu RUNNING 0:00 1:00:00 2 4G N/A n03\n"
+        ),
+    )
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(5):
+            await pilot.pause(0.05)
+        panel = app.query_one(JobsPanel)
+        table = panel.query_one("#jobs-table", DataTable)
+        # Highlight ``train`` (row index 1) before filtering.
+        table.move_cursor(row=1)
+        await pilot.pause()
+        assert panel._selected_row().name == "train"
+
+        panel._filter = "train"
+        panel._render_rows()
+        await pilot.pause()
+        # Filtered view has 1 row, cursor stayed on the same job.
+        assert panel._selected_row().name == "train"
+
+
+async def test_cursor_top_and_bottom_jump(monkeypatch) -> None:
+    """``g`` / ``G`` jump to the first / last visible row."""
+    from textual.widgets import DataTable
+
+    monkeypatch.setattr(
+        slurm,
+        "list_jobs",
+        lambda cfg: (
+            "JOBID PARTITION NAME STATE TIME LIMIT CPU MEM GRES NODE\n"
+            "1 cpufast a RUNNING 0:00 1:00:00 2 4G N/A n01\n"
+            "2 cpufast b RUNNING 0:00 1:00:00 2 4G N/A n02\n"
+            "3 cpufast c RUNNING 0:00 1:00:00 2 4G N/A n03\n"
+        ),
+    )
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(5):
+            await pilot.pause(0.05)
+        panel = app.query_one(JobsPanel)
+        table = panel.query_one("#jobs-table", DataTable)
+
+        panel.action_cursor_bottom()
+        await pilot.pause()
+        assert table.cursor_row == 2
+
+        panel.action_cursor_top()
+        await pilot.pause()
+        assert table.cursor_row == 0
 
 
 async def test_refresh_handles_squeue_failure_gracefully(monkeypatch) -> None:
