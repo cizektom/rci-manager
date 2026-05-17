@@ -299,6 +299,29 @@ def test_editor_runs_for_known_alloc(monkeypatch) -> None:
     assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl"}
 
 
+def test_workspace_reuses_alloc_and_launches(monkeypatch) -> None:
+    """``rci workspace`` follows the shell pattern — reuses an existing
+    rci-managed alloc rather than always spawning, then drops into the
+    tmux launcher."""
+    captured: dict = {}
+
+    def fake_launch_workspace(a, folder, cfg):
+        captured.update({"node": a.node, "jobid": a.jobid, "folder": folder})
+        return 0
+
+    monkeypatch.setattr(launch, "launch_workspace", fake_launch_workspace)
+    monkeypatch.setattr(
+        alloc_mod, "select_or_submit",
+        lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
+    )
+    result = runner.invoke(app, ["workspace", "sam2rl"])
+    assert result.exit_code == 0
+    assert captured == {
+        "node": "g05", "jobid": "9999",
+        "folder": "/home/cizekto2/sam2rl",
+    }
+
+
 # ── first-run setup gating ──────────────────────────────────────────────────
 
 

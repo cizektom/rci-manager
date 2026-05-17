@@ -82,12 +82,13 @@ fall back to `--help`.
 | `rci shell  [DIR] [--gpu]`           | interactive bash on the compute node               |
 | `rci editor [DIR] [--gpu]`           | VS Code Remote-SSH (WSL → Windows `code.cmd`)      |
 | `rci agent  [DIR] [--gpu] [...]`     | spawn `agent-N` + run `claude remote-control`      |
+| `rci workspace [DIR] [--gpu]`        | tmux workspace (2 claude panes + bash)             |
 | `rci alloc  [--gpu]`                 | prints `<node> <jobid>` — scripting-friendly       |
 | `rci port LOCAL[:REMOTE]`            | local → compute-node port forward (Ctrl-C to stop) |
 | `rci tui`                            | Textual TUI dashboard                              |
 | `rci version`                        | prints the rci-cli version                         |
 
-**Folder argument rules** (applies to `editor`, `shell`, `agent`):
+**Folder argument rules** (applies to `editor`, `shell`, `agent`, `workspace`):
 
 - omitted → `cfg.home` (your cluster home dir)
 - relative → resolved under `cfg.home` (`rci shell myproj` → `<home>/myproj`)
@@ -111,9 +112,57 @@ on the node. If you run ML/GPU code from VS Code, either wrap it manually
 `CUDA_VISIBLE_DEVICES=0` for one-off scripts) or run it via `rci shell`
 in a separate window.
 
-Persistence across ssh disconnect isn't wrapped at the rci-cli layer — run
-`tmux` or `screen` inside `rci shell` if you need it. The bare `rci` TUI
-itself runs locally and survives any ssh drop.
+Persistence across ssh disconnect isn't wrapped at the rci-cli layer for
+`rci shell` — run `tmux` or `screen` inside if you need it. (`rci workspace`
+*is* tmux-wrapped — see below.) The bare `rci` TUI itself runs locally and
+survives any ssh drop.
+
+### Workspace — predefined tmux cockpit, disconnect-safe
+
+`rci workspace` (TUI key `w`) opens a tmux session on the compute node with
+a default 2-or-3-pane layout, reusing an existing rci-managed allocation when
+one is running (same alloc pool as `rci shell`).
+
+```sh
+rci workspace                  # CPU or strongest existing alloc, $home
+rci workspace sam2rl           # under <home>/sam2rl
+rci workspace sam2rl --gpu     # require/spawn a GPU alloc
+```
+
+Default layout:
+
+```
++----------+----------+    panes 0 & 2: claude (auto-launched)
+|          |          |
+| claude 0 | claude 2 |
+|          |          |
++----------+----------+
+|       bash 1        |    pane 1: bash for ad-hoc commands
++---------------------+
+```
+
+Both claude panes start running on session creation — no Enter required.
+Pane indices are creation-order (top-left=0, bottom=1, top-right=2). Use
+Ctrl-b arrow keys to move between them — the numbers only matter if you're
+scripting tmux.
+
+**Disconnect-safe.** The tmux daemon lives in a long-lived
+`srun --jobid --overlap` step that holds the job's cgroup open. Detach with
+Ctrl-b d, your local terminal returns; the session keeps running on the
+compute node. Re-press `w` (or rerun `rci workspace`) on the same alloc to
+reattach instantly. Closing every pane exits the session, which exits the
+holder step, which Slurm cleans up — next workspace launch builds fresh.
+
+**Cgroup-correct by construction.** The tmux *daemon* is forked from inside
+the cgroup-wrapped srun (the holder); panes inherit the daemon's cgroup, so
+`nvidia-smi` inside a pane sees only your allocated GPUs — no leak like the
+`rci editor` caveat above. The interactive `tmux attach` client doesn't need
+srun wrapping (clients only proxy keystrokes; the daemon does the work).
+
+Stdout/stderr from the holder step append to
+`~/.rci/workspace-logs/<jobid>.log` on the compute node if you need to debug
+a failed setup. Per-job tmux socket (`rci-ws-<jobid>`) means multiple
+workspaces on different allocations don't share a daemon.
 
 ### Agent — control Claude from your phone
 
@@ -164,7 +213,7 @@ Bare `rci` opens the dashboard:
 │ 1234568  dev-gpu  ·  RUNNING  on  gpufast  ·  8 CPU · 32G · 1 GPU
 │ ·  used 00:10 / limit 04:00:00  ·  node g05                     │
 ├────────────────────────────────────────────────────────────────┤
-│ f Frontend  s Submit  c Connect  e Editor  a Agent  r Refresh  d Delete  q Quit
+│ f Frontend  s Submit  c Connect  e Editor  a Agent  w Workspace  r Refresh  d Delete  q Quit
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -177,6 +226,7 @@ Bare `rci` opens the dashboard:
 | `c` | **Connect** — shell into the highlighted job's compute node (prompts for folder first) |
 | `e` | **Editor** — VS Code Remote-SSH against the highlighted job (prompts for folder first) |
 | `a` | **Agent** — spawn a new `agent-N` and run `claude remote-control` (folder → agent options → resources) |
+| `w` | **Workspace** — open (or reattach to) a tmux session on the highlighted job (2 claude panes on top, bash on bottom). Detach with `Ctrl-b d` |
 | `d` | **Delete** — cancel the highlighted job (confirmation modal, default ✕ No) |
 | `r` | force-refresh the table (also auto-refreshes every 5s) |
 | `↑/↓` or `j`/`k` | navigate rows; the detail line updates live |
@@ -332,8 +382,8 @@ so the contract surface is small and well-tested.
 - [ ] GPU/CPU utilization snapshot on the active node.
 - [ ] Saved allocation profiles (`rci profile use ml-train`).
 - [ ] Batch script editor (`sbatch` flow alongside the salloc flow).
-- [ ] Persistent (tmux/zellij) wrapping around `rci shell` — when it's
-      proven worth the complexity.
+- [x] Persistent tmux wrapping (see `rci workspace` / TUI `w` — cgroup-correct,
+      disconnect-safe, predefined layout).
 
 ---
 

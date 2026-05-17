@@ -59,10 +59,23 @@ def launch_shell(alloc: Allocation, folder: str, cfg: Config) -> int:
     clusters with ``pam_slurm_adopt`` enforcing GPU cgroups, but on
     sites like RCI it'd expose every GPU on the node instead of just
     the ones you requested.
+
+    Before exec'ing srun we send ``\\033[H\\033[2J`` (cursor home + clear
+    visible screen) and re-echo a short banner, so the MOTD / ``Last
+    login`` / blank lines from the ssh hop don't sit between the local
+    launch line and the bash prompt. Scrollback is preserved (``[2J``,
+    not ``[3J``), so the wiped lines are still reachable by scrolling.
     """
     print(f"→ {alloc.node} (job {alloc.jobid}): opening shell in {folder}")
+    banner = f"→ {alloc.node} (job {alloc.jobid}): shell in {folder}"
+    # ``export PATH`` is needed because the preamble's trailing ``PATH=…``
+    # is now a standalone assignment (no longer inline-prefixing ``exec
+    # srun``), so without exporting it srun's bash wouldn't inherit the
+    # ``$HOME/bin:$HOME/.local/bin`` additions.
     cmd = (
-        f"{_remote_preamble(folder)} "
+        f"{_remote_preamble(folder)}; "
+        f"export PATH; "
+        f"printf '\\033[H\\033[2J%s\\n' {shlex.quote(banner)}; "
         f"exec srun --jobid={alloc.jobid} --overlap --pty bash -i"
     )
     return ssh.run(alloc.node, cmd, tty=True, check=False)
@@ -140,3 +153,121 @@ def launch_editor(alloc: Allocation, folder: str, cfg: Config) -> int:
     if os.path.exists("/mnt/c"):
         return ssh.run_local(["cmd.exe", "/c", "code", "--folder-uri", uri], check=False)
     return ssh.run_local(["code", "--folder-uri", uri], check=False)
+
+
+WORKSPACE_LOG_DIR = "$HOME/.rci/workspace-logs"
+
+
+def workspace_log_path(jobid: str) -> str:
+    """Compute-node path of the workspace holder log for ``jobid``."""
+    return f"{WORKSPACE_LOG_DIR}/{shlex.quote(jobid)}.log"
+
+
+def _pane_cmd(folder: str, *, command: str = "") -> str:
+    """Shell command for a tmux pane: cd + venv + PATH + optional payload + bash.
+
+    Empty ``command`` ⇒ drops straight into ``exec bash -i``. Non-empty
+    runs ``command`` first, then *falls back* to interactive bash —
+    important for tmux layout stability: if ``command`` exits (or isn't
+    installed on the node, exit 127), the pane stays alive instead of
+    collapsing and tmux re-tiling around it.
+    """
+    pre = _remote_preamble(folder)
+    if command:
+        inner = f"{pre}; {command}; exec bash -i"
+    else:
+        inner = f"{pre}; exec bash -i"
+    return f"bash -c {shlex.quote(inner)}"
+
+
+def launch_workspace(alloc: Allocation, folder: str, cfg: Config) -> int:
+    """Open (or reattach to) a tmux workspace on the compute node.
+
+    Layout (3 panes):
+
+        +----------+----------+
+        | claude 0 | claude 2 |   top row (70%): two claude shells,
+        +----------+----------+   auto-launched on session creation
+        |       bash 1        |   bottom (30%): bash for ad-hoc commands
+        +---------------------+
+
+    Pane indices are creation-order (0 first, then 1 from the vertical
+    split, then 2 from the horizontal split of pane 0) — visually that
+    reads top-left=0, top-right=2, bottom=1. Use Ctrl-b arrow keys to
+    move between them.
+
+    Persistence model. tmux's daemon must live inside the job's cgroup
+    (otherwise its panes see every GPU on the node — same trap as
+    ``rci editor``). Achieved by starting the daemon inside a long-lived
+    background ``srun --jobid --overlap`` step that holds the cgroup open
+    via a ``while has-session; sleep`` loop. The user's interactive
+    ``tmux attach`` runs as a plain ssh command — it's just a client,
+    not where the panes execute, so it doesn't need srun wrapping.
+
+    Per-job socket (``rci-ws-<jobid>``) so workspaces on different
+    allocations don't share a daemon (and a wrong cgroup).
+
+    Idempotent: subsequent calls reattach to the existing session, so
+    ``w`` after a disconnect is instant. Closing every pane exits the
+    session, which exits the holder loop, which ends the slurm step —
+    next ``w`` builds fresh.
+    """
+    sock = f"rci-ws-{alloc.jobid}"
+    sess = "main"
+    sock_q = shlex.quote(sock)
+    sess_q = shlex.quote(sess)
+    jid_q = shlex.quote(alloc.jobid)
+    folder_q = shlex.quote(folder)
+    claude_pane = shlex.quote(_pane_cmd(folder, command="claude"))
+    bash_pane = shlex.quote(_pane_cmd(folder))
+
+    # Inner script runs inside the long-lived srun step. Builds the 3-pane
+    # layout, then idles in the has-session poll loop — the loop is the
+    # cgroup holder. When the user kills the last pane the loop returns
+    # false and srun exits cleanly.
+    #
+    # Layout sequence — each pane is born with its right initial command,
+    # so we don't rely on post-hoc ``send-keys`` to target pane indices
+    # (tmux renumbers panes by visual position after every split, so
+    # creation-order ≠ final-index — easy to send keys to the wrong pane):
+    #
+    #   1) new-session  with claude → pane (whole window, runs claude)
+    #   2) split -v -p 30 with bash → bash row below (30% tall)
+    #   3) split -h -p 50 -t .0 with claude → second claude in top-right
+    #
+    # After step 3 the final positional indices are: 0=top-left,
+    # 1=top-right, 2=bottom. select-pane -t .0 focuses the left claude.
+    inner_lines = [
+        f"tmux -L {sock_q} new-session -d -s {sess_q} -c {folder_q} {claude_pane}",
+        f"tmux -L {sock_q} split-window -v -p 30 -t {sess_q} -c {folder_q} {bash_pane}",
+        f"tmux -L {sock_q} split-window -h -p 50 -t {sess_q}.0 -c {folder_q} {claude_pane}",
+        f"tmux -L {sock_q} select-pane -t {sess_q}.0",
+        f"while tmux -L {sock_q} has-session -t {sess_q} 2>/dev/null; do sleep 30; done",
+    ]
+    inner_q = shlex.quote(" && ".join(inner_lines))
+
+    log_path = workspace_log_path(alloc.jobid)
+    setup_script = (
+        "set -e\n"
+        f"SOCK={sock_q}\n"
+        f"SESS={sess_q}\n"
+        f"mkdir -p {WORKSPACE_LOG_DIR}\n"
+        'if ! tmux -L "$SOCK" has-session -t "$SESS" 2>/dev/null; then\n'
+        f"  nohup srun --jobid={jid_q} --overlap --quiet bash -c {inner_q} "
+        f">>{log_path} 2>&1 </dev/null & disown\n"
+        # Poll briefly for the daemon to come up before we try to attach.
+        # tmux daemon-start is sub-second on healthy nodes; bail at ~3s.
+        "  for _ in 1 2 3 4 5 6 7 8 9 10; do\n"
+        "    sleep 0.3\n"
+        '    tmux -L "$SOCK" has-session -t "$SESS" 2>/dev/null && break\n'
+        "  done\n"
+        "fi\n"
+    )
+
+    print(f"→ {alloc.node} (job {alloc.jobid}): opening workspace in {folder}")
+    rc = ssh.run(alloc.node, "bash -s", tty=False, check=False, stdin=setup_script)
+    if rc != 0:
+        return rc
+    # Attach as a plain ssh client — the daemon (forked from the holder
+    # srun) is already cgroup-correct, so this client doesn't need srun.
+    return ssh.run(alloc.node, f"tmux -L {sock_q} attach -t {sess_q}", tty=True, check=False)

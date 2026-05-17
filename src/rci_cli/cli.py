@@ -294,6 +294,22 @@ def shell(
 
 
 @app.command()
+def workspace(
+    folder: Annotated[str, typer.Argument()] = "",
+    gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
+) -> None:
+    """Open a tmux workspace on the compute node (2 claude panes + bash).
+
+    Reuses an existing rci-managed allocation if one is running, otherwise
+    spawns a ``dev-N`` (same pool as ``rci shell``). Subsequent invocations
+    against the same job reattach to the live session — disconnect-safe.
+    """
+    cfg = _cfg()
+    a = _require_alloc(cfg, require_gpu=gpu)
+    sys.exit(launch.launch_workspace(a, launch.resolve_folder(folder, cfg), cfg))
+
+
+@app.command()
 def alloc(
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
 ) -> None:

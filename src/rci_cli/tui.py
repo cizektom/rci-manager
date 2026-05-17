@@ -838,8 +838,9 @@ class JobsPanel(Container):
 
     # Order = footer order. Reads as a workflow story left-to-right: get onto
     # the cluster (Frontend) → submit a job (Submit) → connect to it (Connect)
-    # → open in an editor (Editor) → spawn agent (Agent) → maintenance
-    # (Refresh) → destructive (Delete). Every label is cued by its key letter
+    # → open in an editor (Editor) → spawn agent (Agent) → tmux workspace
+    # (Workspace) → maintenance (Refresh) → destructive (Delete). Every label
+    # is cued by its key letter
     # so the footer reads as a menu. ``hjkl`` are kept off the action list
     # (`k`/`l` would collide with vim-style row movement) and bound below as
     # hidden navigation shortcuts.
@@ -849,6 +850,7 @@ class JobsPanel(Container):
         Binding("c", "shell_into", "Connect"),
         Binding("e", "editor_into", "Editor"),
         Binding("a", "agent_into", "Agent"),
+        Binding("w", "workspace_into", "Workspace"),
         Binding("r", "refresh", "Refresh"),
         Binding("d", "cancel_job", "Delete"),
         # vim-style row navigation, hidden from the footer to keep the action
@@ -1202,6 +1204,13 @@ class JobsPanel(Container):
         # folder first so ``claude remote-control`` starts in the right place.
         self._pick_folder_then("agent")
 
+    def action_workspace_into(self) -> None:
+        # Workspace mirrors the shell flow — pick folder, reuse an existing
+        # dev alloc when there is one, else spawn dev-N. The tmux session
+        # itself is keyed by the alloc's jobid, so subsequent presses on the
+        # same row reattach to the same workspace.
+        self._pick_folder_then("workspace")
+
     def action_shell_frontend(self) -> None:
         """Open an interactive ssh session to the login host (``cfg.ssh_host``).
 
@@ -1377,6 +1386,15 @@ class JobsPanel(Container):
         if kind == "editor":
             self._notify_action(f"opening editor on {alloc.node} ({folder_abs})")
             launch.launch_editor(alloc, folder_abs, cfg)
+            return
+        if kind == "workspace":
+            self._notify_action(
+                f"opening workspace on {alloc.node} ({folder_abs})… detach with Ctrl-b d"
+            )
+            with self.app.suspend():
+                launch.launch_workspace(alloc, folder_abs, cfg)
+            self._notify_action(f"returned from {alloc.node} (workspace still running)")
+            self.refresh_jobs()
             return
         # shell: suspend the TUI so ssh has the terminal.
         self._notify_action(f"attaching to {alloc.node} ({folder_abs})… exit to return")

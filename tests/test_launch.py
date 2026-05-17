@@ -158,3 +158,128 @@ def test_agent_log_path_namespaces_per_name() -> None:
     # Spaces in names get shell-quoted; ``.log`` lives outside the quote and
     # the shell concatenates them into one filename.
     assert launch.agent_log_path("my run") == "$HOME/.rci/agent-logs/'my run'.log"
+
+
+# ── workspace launcher ─────────────────────────────────────────────────────
+
+
+def _patch_ssh_multi(monkeypatch) -> list[dict]:
+    """ssh.run capturer that records every call (launch_workspace makes two)."""
+    calls: list[dict] = []
+
+    def fake_run(host, cmd="", *, tty=False, check=True, stdin=None):
+        calls.append({"host": host, "cmd": cmd, "tty": tty, "stdin": stdin})
+        return 0
+
+    monkeypatch.setattr(ssh, "run", fake_run)
+    return calls
+
+
+def test_launch_workspace_setup_and_attach_phases(monkeypatch, cfg: Config) -> None:
+    """The two-phase shape: non-tty bootstrap over stdin, then tty attach.
+
+    Phase 1 ships the tmux setup as a here-doc to ``bash -s`` (no terminal
+    handover yet — we're just spawning the holder srun and waiting for the
+    socket). Phase 2 is the foreground ``tmux attach`` that takes over the
+    user's terminal.
+    """
+    calls = _patch_ssh_multi(monkeypatch)
+    rc = launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"), "/home/cizekto2/sam2rl", cfg
+    )
+    assert rc == 0
+    assert len(calls) == 2
+
+    setup, attach = calls
+    # Setup: non-interactive, script over stdin.
+    assert setup["host"] == "g05"
+    assert setup["tty"] is False
+    assert setup["cmd"] == "bash -s"
+    assert isinstance(setup["stdin"], str) and setup["stdin"]
+
+    # Attach: foreground tmux client on the same per-job socket.
+    assert attach["host"] == "g05"
+    assert attach["tty"] is True
+    assert attach["cmd"] == "tmux -L rci-ws-5555 attach -t main"
+    assert attach["stdin"] is None
+
+
+def test_launch_workspace_holder_keeps_cgroup_alive(monkeypatch, cfg: Config) -> None:
+    """The tmux daemon must be forked inside ``srun --jobid --overlap`` and
+    the step must be held open while the session exists — otherwise slurm
+    cleans up the cgroup and the workspace's GPU panes see the wrong GPUs."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"), "/home/cizekto2/sam2rl", cfg
+    )
+    setup_script = calls[0]["stdin"]
+    # Holder is detached so the bootstrap ssh returns promptly; the holder
+    # itself stays alive on the compute node, owned by init.
+    assert "nohup srun --jobid=5555 --overlap" in setup_script
+    assert "& disown" in setup_script
+    # The hold loop is the cgroup keepalive: srun's primary process must
+    # outlive the tmux setup, otherwise slurm tears down the step.
+    assert "while tmux -L rci-ws-5555 has-session" in setup_script
+    assert "sleep 30" in setup_script
+    # Re-runs are no-ops: the has-session guard makes the bootstrap idempotent.
+    # (The outer guard uses ``$SOCK`` / ``$SESS`` shell vars assigned at the
+    # top of the script — see the SOCK=…/SESS=… header lines.)
+    assert "SOCK=rci-ws-5555" in setup_script
+    assert "SESS=main" in setup_script
+    assert 'if ! tmux -L "$SOCK" has-session -t "$SESS"' in setup_script
+
+
+def test_launch_workspace_three_pane_layout(monkeypatch, cfg: Config) -> None:
+    """Default layout: two claude shells on top, bash on the bottom.
+
+    Each pane is born with its right initial command — we don't post-hoc
+    target panes via ``send-keys``, because tmux re-indexes panes by visual
+    position after every split (creation-order ≠ final-index, so a literal
+    ``-t main.2`` after the third split actually hits the bottom pane,
+    not the new top-right one).
+
+    The second split must target ``main.0`` explicitly; without ``-t .0``
+    it would split the most-recently-focused pane (pane 1, the bash row),
+    yielding an L-shape.
+    """
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"), "/home/cizekto2/sam2rl", cfg
+    )
+    setup_script = calls[0]["stdin"]
+    # 1) Initial pane starts as claude (becomes top-left after splits).
+    assert "new-session -d -s main -c /home/cizekto2/sam2rl" in setup_script
+    # 2) Bash row at the bottom, 30% tall — splits the whole window.
+    assert "split-window -v -p 30 -t main -c /home/cizekto2/sam2rl" in setup_script
+    # 3) Halve the top by splitting pane 0 specifically; new pane starts
+    #    as claude (the second top-row claude).
+    assert "split-window -h -p 50 -t main.0 -c /home/cizekto2/sam2rl" in setup_script
+    # Initial command of each pane is the right thing: two claude payloads
+    # (top row) and one bash payload (bottom). Check the inner ``exec``
+    # markers from _pane_cmd — these appear inside the shlex-quoted pane
+    # commands embedded in the setup script.
+    assert setup_script.count("claude; exec bash -i") == 2
+    assert setup_script.count("; exec bash -i") == 3  # 2 claude + 1 bare bash
+    # Defensive: no send-keys anywhere — that's how we got the L-shape.
+    assert "send-keys" not in setup_script
+    # No GPU watcher pane in this layout.
+    assert "nvidia-smi" not in setup_script
+    assert "CUDA_VISIBLE_DEVICES" not in setup_script
+
+
+def test_launch_workspace_per_job_socket(monkeypatch, cfg: Config) -> None:
+    """Per-job tmux socket — two workspaces on different allocs must not
+    share a daemon (sharing one would put panes in the wrong cgroup)."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(Allocation(node="g05", jobid="111"), "/tmp", cfg)
+    launch.launch_workspace(Allocation(node="g06", jobid="222"), "/tmp", cfg)
+    setup_a, _attach_a, setup_b, _attach_b = calls
+    assert "tmux -L rci-ws-111" in setup_a["stdin"]
+    assert "tmux -L rci-ws-222" in setup_b["stdin"]
+    # Sanity: a setup script must not leak the *other* job's socket.
+    assert "rci-ws-222" not in setup_a["stdin"]
+    assert "rci-ws-111" not in setup_b["stdin"]
+
+
+def test_workspace_log_path_namespaces_per_jobid() -> None:
+    assert launch.workspace_log_path("5555") == "$HOME/.rci/workspace-logs/5555.log"

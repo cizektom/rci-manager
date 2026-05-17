@@ -34,6 +34,7 @@ _rci() {
                 'shell:Interactive bash on the compute node'
                 'editor:Open VS Code Remote-SSH on the compute node'
                 'agent:Spawn agent-N and run claude remote-control on it'
+                'workspace:Open a tmux workspace (2 claude panes + bash) on the compute node'
                 'tui:Launch the interactive TUI'
             )
             utility=(
@@ -60,7 +61,7 @@ _rci() {
                         '(-m --mem)'{-m,--mem}'[memory in GB]:mem:(8 16 32 64 128 256)' \
                         '(-t --time)'{-t,--time}'[walltime HH:MM:SS]:time:(0:30:00 1:00:00 2:00:00 4:00:00 8:00:00 12:00:00 24:00:00)'
                     ;;
-                editor|shell)
+                editor|shell|workspace)
                     _arguments \
                         '--gpu[require a GPU allocation]' \
                         '1:remote folder (empty=$HOME on cluster, relative→under home, absolute→as-is): '
