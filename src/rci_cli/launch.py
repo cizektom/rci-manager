@@ -60,14 +60,11 @@ def launch_shell(alloc: Allocation, folder: str, cfg: Config) -> int:
     sites like RCI it'd expose every GPU on the node instead of just
     the ones you requested.
 
-    Before exec'ing srun we send ``\\033[H\\033[2J`` (cursor home + clear
-    visible screen) and re-echo a short banner, so the MOTD / ``Last
-    login`` / blank lines from the ssh hop don't sit between the local
-    launch line and the bash prompt. Scrollback is preserved (``[2J``,
-    not ``[3J``), so the wiped lines are still reachable by scrolling.
+    ``clear`` runs after the preamble so the MOTD / ``Last login`` noise
+    from the ssh hop is wiped before bash takes over — equivalent to
+    hitting Ctrl-L the moment the connection lands. Scrollback is
+    preserved by ``clear`` (it uses ``\\033[H\\033[2J``, not ``[3J``).
     """
-    print(f"→ {alloc.node} (job {alloc.jobid}): opening shell in {folder}")
-    banner = f"→ {alloc.node} (job {alloc.jobid}): shell in {folder}"
     # ``export PATH`` is needed because the preamble's trailing ``PATH=…``
     # is now a standalone assignment (no longer inline-prefixing ``exec
     # srun``), so without exporting it srun's bash wouldn't inherit the
@@ -75,7 +72,7 @@ def launch_shell(alloc: Allocation, folder: str, cfg: Config) -> int:
     cmd = (
         f"{_remote_preamble(folder)}; "
         f"export PATH; "
-        f"printf '\\033[H\\033[2J%s\\n' {shlex.quote(banner)}; "
+        f"clear; "
         f"exec srun --jobid={alloc.jobid} --overlap --pty bash -i"
     )
     return ssh.run(alloc.node, cmd, tty=True, check=False)
