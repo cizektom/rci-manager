@@ -41,9 +41,13 @@ def _remote_preamble(folder: str) -> str:
     The venv source is conditional on a ``.venv/bin/activate`` existing
     *relative to the folder we just cd'd into* — projects without one (or
     that manage activation elsewhere) get a no-op.
+
+    ``folder`` is ``shlex.quote``'d so a path containing ``'`` (or any
+    other shell metacharacter) doesn't break out of the cd argument.
     """
+    safe_folder = shlex.quote(folder)
     return (
-        f"cd '{folder}' || {{ echo 'rci: {folder} not found on '\"$(hostname)\" >&2; exit 1; }}; "
+        f"cd {safe_folder} || {{ echo 'rci: folder not found on '\"$(hostname)\" >&2; exit 1; }}; "
         f"[ -f .venv/bin/activate ] && . .venv/bin/activate; "
         f'PATH="$HOME/bin:$HOME/.local/bin:$PATH"'
     )

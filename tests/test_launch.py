@@ -42,18 +42,28 @@ def test_resolve_folder_uses_effective_home_fallback() -> None:
 def test_remote_preamble_cds_and_tries_relative_venv() -> None:
     """After ``cd <folder>``, the preamble always tries to source
     ``.venv/bin/activate`` — relative, so it adapts per-project. Folders
-    without a venv get a no-op via the ``[ -f ... ]`` guard."""
+    without a venv get a no-op via the ``[ -f ... ]`` guard.
+
+    ``cd`` uses ``shlex.quote`` rather than bare single quotes; for plain
+    paths that's a no-op (``shlex.quote('/home/alice/proj')`` returns the
+    string unchanged), which is what we assert here. See
+    :func:`test_remote_preamble_shell_quotes_pathological_folder` for the
+    quoting kicking in."""
     s = _remote_preamble("/home/alice/proj")
-    assert "cd '/home/alice/proj'" in s
+    assert "cd /home/alice/proj " in s
     assert "[ -f .venv/bin/activate ] && . .venv/bin/activate" in s
     assert "$HOME/bin:$HOME/.local/bin:$PATH" in s
+    # Venv path is always relative to cwd — no $HOME/... prefix.
+    assert "$HOME/" not in s.split("PATH=")[0]
 
 
-def test_remote_preamble_does_not_reference_absolute_venv() -> None:
-    """Regression: the venv path is always relative (``.venv/bin/activate``)
-    — no ``$HOME/...`` prefix that would tie it to one project."""
-    s = _remote_preamble("/home/alice")
-    assert "$HOME/" not in s.split("PATH=")[0]  # only the PATH line uses $HOME
+def test_remote_preamble_shell_quotes_pathological_folder() -> None:
+    """A folder containing ``'`` (or any other shell metachar) must not break
+    out of the cd argument — regression for the prior raw f-string interpolation."""
+    s = _remote_preamble("/scratch/foo'bar")
+    # ``shlex.quote`` produces ``'/scratch/foo'"'"'bar'`` — verify the cd line
+    # parses as a single argument by checking the closing-then-reopening pattern.
+    assert "cd '/scratch/foo'\"'\"'bar' " in s
 
 
 # ── launchers (mock ssh.run / ssh.run_local) ───────────────────────────────
@@ -119,7 +129,7 @@ def test_launch_agent_runs_detached_with_nohup(monkeypatch, cfg: Config) -> None
     assert captured["host"] == "g05"
     assert captured["tty"] is False  # detached — no terminal handover
     cmd = captured["cmd"]
-    assert "cd '/home/cizekto2/sam2rl'" in cmd
+    assert "cd /home/cizekto2/sam2rl " in cmd
     assert "exec claude" not in cmd  # would replace the shell, blocking ssh
     # Wrapped with srun so claude runs as a step of the allocation —
     # gets the right GPUs and lives in the job's cgroup.

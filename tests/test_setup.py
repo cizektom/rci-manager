@@ -15,34 +15,26 @@ from rci_cli.setup import build_cfg, run_cli
 # ── build_cfg ──────────────────────────────────────────────────────────────
 
 
-def test_build_cfg_uses_provided_values() -> None:
-    c = build_cfg(user="alice", ssh_host="rci", home="/scratch/users/alice")
-    assert c.user == "alice"
-    assert c.ssh_host == "rci"
-    assert c.home == "/scratch/users/alice"
-
-
-def test_build_cfg_defaults_home_to_home_user() -> None:
-    """Blank ``home`` is the wizard's UX default — fill with ``/home/<user>``."""
-    c = build_cfg(user="alice", ssh_host="rci")
-    assert c.home == "/home/alice"
-
-
-def test_build_cfg_defaults_ssh_host_to_rci() -> None:
-    c = build_cfg(user="alice", ssh_host="")
-    assert c.ssh_host == "rci"
-
-
-def test_build_cfg_strips_whitespace() -> None:
-    """Users pasting from docs sometimes drag trailing whitespace — be tolerant."""
-    c = build_cfg(user="  alice  ", ssh_host="  rci  ", home="  /h/alice  ")
-    assert c.user == "alice"
-    assert c.ssh_host == "rci"
-    assert c.home == "/h/alice"
+@pytest.mark.parametrize(
+    "user,ssh_host,home,expected_user,expected_host,expected_home",
+    [
+        # Explicit values pass through verbatim.
+        ("alice", "rci", "/scratch/users/alice", "alice", "rci", "/scratch/users/alice"),
+        # Blank ``home`` defaults to ``/home/<user>``; blank ssh_host → "rci".
+        ("alice", "", "", "alice", "rci", "/home/alice"),
+        # Whitespace stripped on every field — users pasting from docs.
+        ("  alice  ", "  rci  ", "  /h/alice  ", "alice", "rci", "/h/alice"),
+    ],
+)
+def test_build_cfg(
+    user, ssh_host, home, expected_user, expected_host, expected_home
+) -> None:
+    c = build_cfg(user=user, ssh_host=ssh_host, home=home)
+    assert (c.user, c.ssh_host, c.home) == (expected_user, expected_host, expected_home)
 
 
 def test_build_cfg_rejects_empty_user() -> None:
-    """Without a user, ``squeue -u`` etc. would silently target the wrong account."""
+    """Without a user, ``squeue -u`` would silently target the wrong account."""
     with pytest.raises(ValueError, match="user is required"):
         build_cfg(user="", ssh_host="rci")
 

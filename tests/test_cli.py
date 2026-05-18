@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from rci_cli import alloc as alloc_mod
@@ -265,57 +266,31 @@ def test_port_rejects_garbage() -> None:
     assert "Invalid port spec" in result.stdout
 
 
-def test_shell_uses_strongest_alloc(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "cmd,launch_attr",
+    [
+        ("shell", "launch_shell"),
+        ("editor", "launch_editor"),
+        ("workspace", "launch_workspace"),
+    ],
+)
+def test_alloc_consuming_commands_wire_through(monkeypatch, cmd, launch_attr) -> None:
+    """shell/editor/workspace all reuse an existing rci-managed alloc via
+    ``select_or_submit`` and pass it to the appropriate launcher with the
+    resolved folder path."""
     captured: dict = {}
 
-    def fake_launch_shell(a, folder, cfg):
-        captured.update({"node": a.node, "folder": folder})
-        return 0
-
-    monkeypatch.setattr(launch, "launch_shell", fake_launch_shell)
-    monkeypatch.setattr(
-        alloc_mod, "select_or_submit",
-        lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
-    )
-    result = runner.invoke(app, ["shell", "sam2rl"])
-    assert result.exit_code == 0
-    assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl"}
-
-
-def test_editor_runs_for_known_alloc(monkeypatch) -> None:
-    captured: dict = {}
-
-    def fake_launch_editor(a, folder, cfg):
-        captured.update({"node": a.node, "folder": folder})
-        return 0
-
-    monkeypatch.setattr(launch, "launch_editor", fake_launch_editor)
-    monkeypatch.setattr(
-        alloc_mod, "select_or_submit",
-        lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
-    )
-    result = runner.invoke(app, ["editor", "sam2rl"])
-    assert result.exit_code == 0
-    assert captured == {"node": "g05", "folder": "/home/cizekto2/sam2rl"}
-
-
-def test_workspace_reuses_alloc_and_launches(monkeypatch) -> None:
-    """``rci workspace`` follows the shell pattern — reuses an existing
-    rci-managed alloc rather than always spawning, then drops into the
-    tmux launcher."""
-    captured: dict = {}
-
-    def fake_launch_workspace(a, folder, cfg):
+    def fake_launch(a, folder, cfg):
         captured.update({"node": a.node, "jobid": a.jobid, "folder": folder})
         return 0
 
-    monkeypatch.setattr(launch, "launch_workspace", fake_launch_workspace)
+    monkeypatch.setattr(launch, launch_attr, fake_launch)
     monkeypatch.setattr(
         alloc_mod, "select_or_submit",
         lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
     )
-    result = runner.invoke(app, ["workspace", "sam2rl"])
-    assert result.exit_code == 0
+    result = runner.invoke(app, [cmd, "sam2rl"])
+    assert result.exit_code == 0, result.stdout
     assert captured == {
         "node": "g05", "jobid": "9999",
         "folder": "/home/cizekto2/sam2rl",
@@ -337,6 +312,15 @@ def test_subcommand_exits_with_setup_hint_when_unconfigured(
     assert "rci setup" in result.stdout
 
 
+def test_version_is_not_gated_on_setup(monkeypatch, tmp_path: Path) -> None:
+    """Regression: ``version`` must work with an empty config dir — gating
+    it on the wizard would break tab-completion installers and CI smoke checks."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert "0.1.0" in result.stdout
+
+
 def test_setup_subcommand_writes_config(monkeypatch, tmp_path: Path) -> None:
     """``rci setup`` runs the wizard non-interactively here (typer.prompt
     stubbed), and the resulting TOML file lands under XDG_CONFIG_HOME."""
@@ -356,9 +340,3 @@ def test_setup_subcommand_writes_config(monkeypatch, tmp_path: Path) -> None:
     assert loaded.home == "/home/alice"
 
 
-def test_version_works_without_setup(monkeypatch, tmp_path: Path) -> None:
-    """``version`` shouldn't be gated on the wizard — it's a pure stdout call."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
-    result = runner.invoke(app, ["version"])
-    assert result.exit_code == 0
-    assert "0.1.0" in result.stdout

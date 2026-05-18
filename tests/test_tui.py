@@ -1,101 +1,58 @@
-"""Headless TUI smoke tests: app mounts, table accepts data, actions don't crash."""
+"""Headless TUI smoke tests: app mounts, table accepts data, actions don't crash.
+
+Pure unit tests for ``slurm.py`` helpers re-exported by ``tui`` live in
+``test_slurm.py``; tests here exercise the live app via Textual's pilot.
+"""
 
 from __future__ import annotations
+
+import pytest
 
 from rci_cli import alloc as alloc_mod
 from rci_cli import launch
 from rci_cli import slurm
 from rci_cli.alloc import Allocation
-from rci_cli.tui import RUNNING_STATES, JobRow, JobsPanel, RciApp
+from rci_cli.tui import JobRow, JobsPanel, RciApp
 
 
 # ── JobRow parser (pure unit) ───────────────────────────────────────────────
 
 
-def test_jobrow_from_running_line() -> None:
-    # %T emits the long-form state; new columns CPUS/MIN_M/TRES_PER appear before NODELIST.
-    line = "  1234567  cpufast        dev  RUNNING    00:05  01:00:00     2    4G     N/A n01"
+@pytest.mark.parametrize(
+    "line,name,state,cpus,mem,gres,gpu_count,node,node_display",
+    [
+        # CPU running — node column shows real hostname.
+        (
+            "  1234567 cpufast dev RUNNING 00:05 01:00:00 2 4G N/A n01",
+            "dev", "RUNNING", "2", "4G", "N/A", "—", "n01", "n01",
+        ),
+        # GPU running — ``gres=gpu:1`` exposes the count in the compact column.
+        (
+            "  1234568 gpufast dev-gpu RUNNING 00:10 04:00:00 8 32G gpu:1 g05",
+            "dev-gpu", "RUNNING", "8", "32G", "gpu:1", "1", "g05", "g05",
+        ),
+        # Pending — ``%R`` puts the reason in the node column; display dashes it
+        # out, but the raw field stays so the launch guard can still see ``(``.
+        (
+            "  1234569 cpufast dev PENDING 0:00 04:00:00 2 4G N/A (Resources)",
+            "dev", "PENDING", "2", "4G", "N/A", "—", "(Resources)", "—",
+        ),
+    ],
+)
+def test_jobrow_parses_squeue_line(
+    line, name, state, cpus, mem, gres, gpu_count, node, node_display
+) -> None:
     r = JobRow.from_squeue_line(line)
     assert r is not None
-    assert r.jobid == "1234567"
-    assert r.partition == "cpufast"
-    assert r.name == "dev"
-    assert r.state == "RUNNING"
-    assert r.cpus == "2"
-    assert r.mem == "4G"
-    assert r.gres == "N/A"
-    assert r.gpu_count == "—"
-    assert r.node == "n01"
-
-
-def test_jobrow_from_gpu_line_parses_gpus() -> None:
-    line = "  1234568   gpufast    dev-gpu  RUNNING    00:10  04:00:00     8   32G   gpu:1 g05"
-    r = JobRow.from_squeue_line(line)
-    assert r is not None
-    assert r.name == "dev-gpu"
-    assert r.cpus == "8"
-    assert r.mem == "32G"
-    assert r.gres == "gpu:1"
-    assert r.gpu_count == "1"
-    assert r.node == "g05"
-
-
-def test_jobrow_from_pending_line_keeps_reason() -> None:
-    line = "  1234569   cpufast        dev  PENDING    0:00   04:00:00     2    4G     N/A (Resources)"
-    r = JobRow.from_squeue_line(line)
-    assert r is not None
-    assert r.state == "PENDING"
-    # Internal field still keeps the reason text — used by the launch-guard
-    # check ``row.node.startswith('(')`` — but the table column shows ``—``.
-    assert r.node == "(Resources)"
-    assert r.node_display == "—"
-
-
-def test_jobrow_node_display_strips_parens_reason() -> None:
-    running = JobRow(
-        jobid="1", partition="cpufast", name="dev", state="RUNNING",
-        time="0:05", limit="1:00:00", cpus="2", mem="4G", gres="N/A", node="n07",
-    )
-    pending = JobRow(
-        jobid="2", partition="cpufast", name="dev", state="PENDING",
-        time="0:00", limit="1:00:00", cpus="2", mem="4G", gres="N/A", node="(Priority)",
-    )
-    assert running.node_display == "n07"
-    assert pending.node_display == "—"
-
-
-def test_running_states_accept_both_long_and_short_form() -> None:
-    """Regression: %T yields ``RUNNING`` but some setups use ``R`` — both must pass guards."""
-    assert "R" in RUNNING_STATES
-    assert "RUNNING" in RUNNING_STATES
+    assert (r.name, r.state, r.cpus, r.mem, r.gres) == (name, state, cpus, mem, gres)
+    assert r.gpu_count == gpu_count
+    assert r.node == node
+    assert r.node_display == node_display
 
 
 def test_jobrow_returns_none_for_garbage() -> None:
     assert JobRow.from_squeue_line("") is None
     assert JobRow.from_squeue_line("just three fields") is None
-
-
-def test_parse_jobid_from_salloc_handles_known_shapes() -> None:
-    from rci_cli.tui import parse_jobid_from_salloc
-
-    assert parse_jobid_from_salloc("salloc: Granted job allocation 1234567") == "1234567"
-    assert parse_jobid_from_salloc("salloc: Pending job allocation 9999999") == "9999999"
-    assert parse_jobid_from_salloc(
-        "salloc: job 5555 queued and waiting for resources\n"
-        "salloc: job 5555 has been allocated resources"
-    ) == "5555"
-    # No jobid present (salloc errored out) — caller surfaces the message instead.
-    assert parse_jobid_from_salloc("salloc: error: Invalid partition: foo") is None
-    assert parse_jobid_from_salloc("") is None
-
-
-def test_last_meaningful_line_returns_final_non_empty_line() -> None:
-    from rci_cli.tui import last_meaningful_line
-
-    assert last_meaningful_line("a\nb\nc") == "c"
-    assert last_meaningful_line("a\n\n  \nb\n\n") == "b"
-    assert last_meaningful_line("") == "(no output)"
-    assert last_meaningful_line("   ") == "(no output)"
 
 
 # ── App mount ───────────────────────────────────────────────────────────────
@@ -464,7 +421,9 @@ async def test_new_instance_modal_opens_with_no_widget_focused(monkeypatch, tmp_
 
 async def test_new_instance_modal_initial_enter_submits_defaults(monkeypatch, tmp_path) -> None:
     """Pressing Enter immediately after opening (no inner focus) submits the
-    pre-filled defaults — the canonical "I accept these values" path."""
+    pre-filled defaults — the canonical "I accept these values" path. Also
+    asserts the default values that flow through, so a Config drift doesn't
+    quietly produce a submission with stale values."""
     from rci_cli.tui import AllocParams, NewInstanceModal
     from rci_cli.config import Config
 
@@ -479,7 +438,12 @@ async def test_new_instance_modal_initial_enter_submits_defaults(monkeypatch, tm
         await pilot.press("enter")
         await pilot.pause()
     assert len(captured) == 1, "initial Enter must submit"
-    assert isinstance(captured[0], AllocParams)
+    p = captured[0]
+    assert isinstance(p, AllocParams)
+    # Defaults from Config: cpu_defaults = (2, 4, "1:00:00") + cpu/fast.
+    assert (p.partition, p.cores, p.gpus, p.mem_gb, p.walltime, p.kind) == (
+        "cpufast", 2, 0, 4, "1:00:00", "cpu",
+    )
 
 
 async def test_vim_keys_navigate_open_select_dropdown(monkeypatch, tmp_path) -> None:
@@ -593,47 +557,6 @@ async def test_new_instance_modal_enter_on_input_advances_focus(monkeypatch, tmp
         assert app.focused is not cores, "Enter on Input must advance focus"
 
 
-async def test_new_instance_modal_submit_button_uses_defaults(monkeypatch, tmp_path) -> None:
-    """Clicking Submit on a fresh modal sends the Config defaults through.
-
-    Enter while typing in an Input no longer submits the form (would have
-    interrupted mid-edit); submission now goes via the Submit button — either
-    a click, or focus + Enter.
-    """
-    from rci_cli.tui import AllocParams, NewInstanceModal
-    from rci_cli.config import Config
-
-    # Isolate state so a previously-saved set of instance params doesn't
-    # override the Config defaults we're asserting on below.
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-
-    captured: dict[str, AllocParams | None] = {"params": None}
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        def remember(p: AllocParams | None) -> None:
-            captured["params"] = p
-
-        app.push_screen(NewInstanceModal(Config()), remember)
-        await pilot.pause()
-        assert isinstance(app.screen, NewInstanceModal)
-        # ``action_submit`` smart-routes (Select → open dropdown); call the
-        # underlying ``_do_submit`` directly to simulate Submit-button press.
-        app.screen._do_submit()
-        await pilot.pause()
-    assert captured["params"] is not None, "Submit did not dispatch"
-    # Defaults from Config: cpu_defaults = (2, 4, "1:00:00") + cpu/fast.
-    p = captured["params"]
-    assert p.partition == "cpufast"
-    assert p.cores == 2
-    assert p.mem_gb == 4
-    assert p.walltime == "1:00:00"
-    assert p.gpus == 0
-    assert p.kind == "cpu"
-
-
 def test_state_round_trip(monkeypatch, tmp_path) -> None:
     from rci_cli import state
 
@@ -724,11 +647,18 @@ async def test_new_instance_modal_prefills_default_name(monkeypatch, tmp_path) -
         assert app.screen.query_one("#job-name", Input).value == "dev-3"
 
 
-async def test_new_instance_modal_blank_name_reverts_to_suggestion(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "typed_name,expected_name",
+    [
+        # Blank reverts to the suggestion — no way to submit a nameless job.
+        ("", "editor"),
+        # Custom user-typed name wins.
+        ("my-experiment", "my-experiment"),
+    ],
+)
+async def test_new_instance_modal_name_resolution(
+    monkeypatch, tmp_path, typed_name, expected_name
 ) -> None:
-    """Blanking the Name field doesn't submit a nameless job — it reverts to
-    the suggestion that was prefilled."""
     from textual.widgets import Input
 
     from rci_cli.config import Config
@@ -747,41 +677,12 @@ async def test_new_instance_modal_blank_name_reverts_to_suggestion(
         )
         await pilot.pause()
         scr = app.screen
-        scr.query_one("#job-name", Input).value = ""  # user blanks it
+        scr.query_one("#job-name", Input).value = typed_name
         scr._do_submit()
         await pilot.pause()
 
-    p = captured["params"]
-    assert p is not None
-    assert p.job_name == "editor"
-
-
-async def test_new_instance_modal_custom_name_is_respected(
-    monkeypatch, tmp_path
-) -> None:
-    from textual.widgets import Input
-
-    from rci_cli.config import Config
-    from rci_cli.tui import AllocParams, NewInstanceModal
-
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-
-    captured: dict[str, AllocParams | None] = {"params": None}
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(
-            NewInstanceModal(Config(), default_name="dev-1"),
-            lambda p: captured.update(params=p),
-        )
-        await pilot.pause()
-        scr = app.screen
-        scr.query_one("#job-name", Input).value = "my-experiment"
-        scr._do_submit()
-        await pilot.pause()
-
-    assert captured["params"].job_name == "my-experiment"
+    assert captured["params"] is not None
+    assert captured["params"].job_name == expected_name
 
 
 async def test_editor_flow_suggests_singleton_editor_name(monkeypatch, tmp_path) -> None:
@@ -862,15 +763,6 @@ async def test_new_instance_modal_submit_persists_params(monkeypatch, tmp_path) 
     assert saved["gpus"] == 0
     assert saved["mem_gb"] == 4
     assert saved["walltime"] == "1:00:00"
-
-
-def test_assemble_partition_concatenates_type_and_class() -> None:
-    from rci_cli.tui import assemble_partition
-
-    assert assemble_partition("cpu", "fast") == "cpufast"
-    assert assemble_partition("gpu", "") == "gpu"
-    assert assemble_partition("amdgpu", "long") == "amdgpulong"
-    assert assemble_partition("h200", "extralong") == "h200extralong"
 
 
 def test_validate_alloc_rejects_non_gpu_type_with_gpus() -> None:
@@ -1083,9 +975,20 @@ async def test_refresh_handles_squeue_failure_gracefully(monkeypatch) -> None:
         assert app.is_running
 
 
-async def test_confirm_modal_dangerous_focuses_no(monkeypatch) -> None:
-    """Safe default for dangerous=True confirms is the ``No`` button —
-    Enter must abort, not destroy."""
+@pytest.mark.parametrize(
+    "kwargs,expected_id",
+    [
+        # Default: ``No``. Enter on reflex must abort.
+        ({}, "no"),
+        # ``dangerous=True`` still defaults to ``No`` — the red Yes button is
+        # the affordance, not auto-focus.
+        ({"dangerous": True}, "no"),
+        # Opt-in: ``default_yes`` is used by the cancel-job dialog so Enter
+        # confirms the cancellation.
+        ({"dangerous": True, "default_yes": True}, "yes"),
+    ],
+)
+async def test_confirm_modal_default_focus(kwargs, expected_id) -> None:
     from textual.widgets import Button
 
     from rci_cli.tui import ConfirmModal
@@ -1093,62 +996,39 @@ async def test_confirm_modal_dangerous_focuses_no(monkeypatch) -> None:
     app = RciApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.push_screen(ConfirmModal("Really cancel?", dangerous=True), lambda _b: None)
+        app.push_screen(ConfirmModal("prompt?", **kwargs), lambda _b: None)
         await pilot.pause()
-        scr = app.screen
-        assert app.focused is scr.query_one("#no", Button)
-
-
-async def test_confirm_modal_neutral_also_focuses_no(monkeypatch) -> None:
-    """Even non-dangerous confirms default to ``No`` — Enter never confirms
-    on reflex. To proceed, the user must Tab to ``Yes`` (or press ``y``)."""
-    from textual.widgets import Button
-
-    from rci_cli.tui import ConfirmModal
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(ConfirmModal("Proceed?"), lambda _b: None)
-        await pilot.pause()
-        scr = app.screen
-        assert app.focused is scr.query_one("#no", Button)
-
-
-async def test_confirm_modal_default_yes_focuses_yes(monkeypatch) -> None:
-    """``default_yes=True`` opts a caller out of the safe default — the kill
-    dialog uses this so Enter confirms the cancel."""
-    from textual.widgets import Button
-
-    from rci_cli.tui import ConfirmModal
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(
-            ConfirmModal("Kill?", dangerous=True, default_yes=True), lambda _b: None
-        )
-        await pilot.pause()
-        scr = app.screen
-        assert app.focused is scr.query_one("#yes", Button)
+        assert app.focused is app.screen.query_one(f"#{expected_id}", Button)
 
 
 # ── SetupModal / first-run flow ─────────────────────────────────────────────
 
 
-async def test_setup_modal_pops_on_first_run(monkeypatch, tmp_path) -> None:
-    """No config file ⇒ ``RciApp.on_mount`` stacks the SetupModal on top of
-    the dashboard. Without this the JobsPanel would try to ``squeue -u ''``."""
-    from rci_cli.tui import SetupModal
+@pytest.mark.parametrize(
+    "configured,expect_setup",
+    [
+        # Empty XDG_CONFIG_HOME ⇒ SetupModal pops; otherwise JobsPanel would
+        # try to ``squeue -u ''``.
+        (False, True),
+        # Autouse conftest provides a valid config ⇒ dashboard skips setup.
+        (True, False),
+    ],
+)
+async def test_setup_modal_pops_only_when_unconfigured(
+    monkeypatch, tmp_path, configured, expect_setup
+) -> None:
+    from rci_cli.tui import JobsPanel, SetupModal
 
     monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
-    # Override the autouse conftest fixture — point at an empty config dir.
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    if not configured:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
 
     app = RciApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert isinstance(app.screen, SetupModal)
+        assert isinstance(app.screen, SetupModal) is expect_setup
+        # JobsPanel is composed under whichever screen is up — must always exist.
+        assert app.query_one(JobsPanel) is not None
 
 
 async def test_setup_modal_save_writes_config_and_refreshes(
@@ -1234,21 +1114,6 @@ async def test_setup_modal_save_requires_user(monkeypatch, tmp_path) -> None:
         await pilot.pause()
         # Still on the SetupModal.
         assert isinstance(app.screen, SetupModal)
-
-
-async def test_dashboard_skips_setup_when_already_configured(monkeypatch) -> None:
-    """With a valid config (autouse conftest), the SetupModal must NOT pop —
-    the JobsPanel takes the screen as usual."""
-    from rci_cli.tui import JobsPanel, SetupModal
-
-    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
-
-    app = RciApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        assert not isinstance(app.screen, SetupModal)
-        # Dashboard panel is mounted.
-        assert app.query_one(JobsPanel) is not None
 
 
 # ── Agent flow ──────────────────────────────────────────────────────────────

@@ -12,49 +12,30 @@ from rci_cli.config import Config, load, needs_setup, save
 
 def test_personal_defaults_are_empty() -> None:
     """No personal info in the source tree — the wizard fills these in on
-    first launch. Anything non-empty here would be a regression."""
+    first launch. Catches accidentally committing a real username/home as
+    a default."""
     c = Config()
     assert c.user == ""
     assert c.home == ""
 
 
-def test_cluster_defaults_match_rci() -> None:
-    """Cluster-wide defaults model the RCI cluster — code reading them
-    expects this exact shape until config.toml overrides it."""
-    c = Config()
-    assert c.ssh_host == "rci"
-    assert c.cpu_partition == "cpufast"
-    assert c.gpu_partition == "gpufast"
-    assert c.dev_job_name == "dev"
-    assert c.editor_job_name == "editor"
-    assert c.agent_job_name == "agent"
-    assert c.agent_permission_mode == "default"
-    assert c.agent_spawn_mode == "same-dir"
-    assert c.agent_capacity == 32
-    assert c.cpu_defaults == (2, 4, "1:00:00")
-    assert c.gpu_defaults == (1, 2, 8, "1:00:00")
-    assert c.partition_types == ("cpu", "gpu", "amdgpu", "h200")
-    assert c.partition_classes == (
-        ("fast", "fast"),
-        ("(normal)", ""),
-        ("long", "long"),
-        ("extralong", "extralong"),
-    )
-    assert c.gpu_partition_types == ("gpu", "amdgpu", "h200")
+# Cluster-default sanity: assertions for the FULL dataclass body are
+# tautological (they just re-state the dataclass). Instead exercise the
+# two values that actually affect downstream code paths — the partition
+# matrix is hit by ``test_partition_types_and_classes_cover_known_partitions``
+# in test_tui.py.
 
 
-def test_effective_home_uses_explicit_value_when_set() -> None:
-    c = Config(user="alice", home="/scratch/users/alice")
-    assert c.effective_home == "/scratch/users/alice"
-
-
-def test_effective_home_falls_back_to_home_slash_user() -> None:
-    c = Config(user="alice")
-    assert c.effective_home == "/home/alice"
-
-
-def test_effective_home_empty_when_unconfigured() -> None:
-    assert Config().effective_home == ""
+@pytest.mark.parametrize(
+    "user,home,expected",
+    [
+        ("alice", "/scratch/users/alice", "/scratch/users/alice"),  # explicit wins
+        ("alice", "", "/home/alice"),                               # fall back to /home/<user>
+        ("", "", ""),                                               # unconfigured ⇒ empty
+    ],
+)
+def test_effective_home(user, home, expected) -> None:
+    assert Config(user=user, home=home).effective_home == expected
 
 
 def test_load_with_no_config_file_returns_defaults(monkeypatch, tmp_path: Path) -> None:
@@ -117,21 +98,22 @@ def test_load_overrides_partition_catalog_for_other_cluster(
 # ── needs_setup ─────────────────────────────────────────────────────────────
 
 
-def test_needs_setup_true_when_user_empty(monkeypatch, tmp_path: Path) -> None:
+def test_needs_setup_branches(monkeypatch, tmp_path: Path) -> None:
+    """The only thing ``needs_setup`` cares about is whether ``user`` is set
+    — both via passed cfg and via loading from disk."""
+    # Explicit cfg.
+    assert needs_setup(Config()) is True
+    assert needs_setup(Config(user="alice")) is False
+
+    # Load from disk: missing file ⇒ default Config() ⇒ needs setup.
     monkeypatch.setattr(config_mod, "_config_path", lambda: tmp_path / "missing.toml")
     assert needs_setup() is True
 
-
-def test_needs_setup_false_with_user_set(monkeypatch, tmp_path: Path) -> None:
+    # Load from disk: user populated ⇒ doesn't need setup.
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text('user = "alice"\n')
     monkeypatch.setattr(config_mod, "_config_path", lambda: cfg_path)
     assert needs_setup() is False
-
-
-def test_needs_setup_accepts_explicit_cfg() -> None:
-    assert needs_setup(Config()) is True
-    assert needs_setup(Config(user="alice")) is False
 
 
 # ── save round-trip ─────────────────────────────────────────────────────────

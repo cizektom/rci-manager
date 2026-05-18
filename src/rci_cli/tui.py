@@ -451,8 +451,6 @@ class NewInstanceModal(ModalScreen["AllocParams | str | None"]):
         # Input.Submitted, Button.Pressed) are handled natively by the
         # focused widget. So this is straightforward: submit the defaults.
         self._do_submit()
-        # Input (numeric fields) → step to the next focusable widget.
-        self.focus_next()
 
     def _do_submit(self) -> None:
         try:

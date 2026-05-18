@@ -47,13 +47,21 @@ def run(
     check: bool = True,
     stdin: str | None = None,
 ) -> int:
-    """Run ``remote_cmd`` on ``host`` over ssh, inheriting the current TTY.
+    """Run ``remote_cmd`` on ``host`` over ssh.
 
     ``tty=True`` passes ``-tt`` so an interactive program (claude, bash, …) sees
     a real PTY even when the connection traverses ``ProxyJump``.
 
     ``stdin`` pipes a string into the ssh process — used to send multi-line
     bash scripts to ``ssh host bash`` for one-off remote installs.
+
+    For non-interactive batch invocations (``tty=False`` with a non-empty
+    ``remote_cmd`` and no ``stdin`` payload) we detach stdin via
+    ``DEVNULL``. Same reason as :func:`capture`: if the caller is a TUI
+    worker thread, ssh would otherwise race the foreground UI for
+    keystrokes from the shared terminal. Interactive forms (``tty=True``
+    or an empty ``remote_cmd`` that opens a remote shell) keep stdin
+    inherited so the user can actually type into the remote.
     """
     argv = ["ssh"]
     if tty:
@@ -63,6 +71,8 @@ def run(
         argv.append(remote_cmd)
     if stdin is not None:
         return subprocess.run(argv, check=check, input=stdin, text=True).returncode
+    if remote_cmd and not tty:
+        return subprocess.run(argv, check=check, stdin=subprocess.DEVNULL).returncode
     return subprocess.run(argv, check=check).returncode
 
 

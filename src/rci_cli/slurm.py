@@ -7,6 +7,7 @@ plain Python structures so callers (CLI/TUI) can render however they want.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -47,10 +48,14 @@ def submit_cpu(
     (or pass a fixed singleton like ``"editor"``). ``partition`` overrides
     ``cfg.cpu_partition`` when set.
     """
+    # ``job_name`` is user-controllable (TUI free-text Input). ``partition``
+    # is enum-controlled today but still quoted for defence-in-depth: if a
+    # future Config field plumbs through anything funky the salloc args
+    # stay one argv element each, no shell-metachar break-outs.
     cmd = (
-        f"salloc --no-shell --partition={partition or cfg.cpu_partition} "
-        f"--job-name={job_name} "
-        f"--cpus-per-task={cores} --mem={mem_gb}G --time={walltime}"
+        f"salloc --no-shell --partition={shlex.quote(partition or cfg.cpu_partition)} "
+        f"--job-name={shlex.quote(job_name)} "
+        f"--cpus-per-task={cores} --mem={mem_gb}G --time={shlex.quote(walltime)}"
     )
     # salloc writes "Granted job allocation NNN" to stderr — merge so the caller
     # can parse the job id out of the returned string.
@@ -69,16 +74,16 @@ def submit_gpu(
 ) -> str:
     """Submit a GPU allocation. ``job_name`` is required; ``partition`` overrides cfg default."""
     cmd = (
-        f"salloc --no-shell --partition={partition or cfg.gpu_partition} "
-        f"--job-name={job_name} "
-        f"--gres=gpu:{gpus} --cpus-per-task={cores} --mem={mem_gb}G --time={walltime}"
+        f"salloc --no-shell --partition={shlex.quote(partition or cfg.gpu_partition)} "
+        f"--job-name={shlex.quote(job_name)} "
+        f"--gres=gpu:{gpus} --cpus-per-task={cores} --mem={mem_gb}G --time={shlex.quote(walltime)}"
     )
     return ssh.capture(cfg.ssh_host, cmd, check=False, merge_stderr=True)
 
 
 def list_jobs(cfg: Config) -> str:
     """Return the raw ``squeue`` table for the configured user."""
-    cmd = f"squeue -u {cfg.user} -o '{SQUEUE_LIST_FORMAT}'"
+    cmd = f"squeue -u {shlex.quote(cfg.user)} -o '{SQUEUE_LIST_FORMAT}'"
     return ssh.capture(cfg.ssh_host, cmd)
 
 
@@ -92,7 +97,7 @@ def jobs_by_prefix(
     inspect ``gres`` to distinguish CPU vs GPU allocations.
     """
     fmt = "%i %P %j %T %M %l %b %R"
-    cmd = f"squeue -u {cfg.user} -h -t {state} -o '{fmt}'"
+    cmd = f"squeue -u {shlex.quote(cfg.user)} -h -t {shlex.quote(state)} -o '{fmt}'"
     out = ssh.capture(cfg.ssh_host, cmd, check=False)
     rows: list[Job] = []
     for line in out.splitlines():
@@ -145,7 +150,7 @@ def next_indexed_name(cfg: Config, prefix: str) -> str:
     Used by the CLI side (``rci cpu`` / ``rci gpu`` / ``rci shell``). The TUI
     avoids the round-trip by computing from its cached rows.
     """
-    cmd = f"squeue -u {cfg.user} -h -o '%j'"
+    cmd = f"squeue -u {shlex.quote(cfg.user)} -h -o '%j'"
     out = ssh.capture(cfg.ssh_host, cmd, check=False)
     names = (line.strip() for line in out.splitlines() if line.strip())
     return f"{prefix}-{lowest_unused_index(names, prefix)}"
@@ -164,32 +169,36 @@ def has_gpu(job: Job) -> bool:
 
 def node_for(cfg: Config, jobid: str) -> str:
     """Return the assigned node name for ``jobid``, or empty string if not yet assigned."""
-    out = ssh.capture(cfg.ssh_host, f"squeue -j {jobid} -h -o '%N'", check=False)
+    out = ssh.capture(cfg.ssh_host, f"squeue -j {shlex.quote(jobid)} -h -o '%N'", check=False)
     return out.strip()
 
 
 def describe(cfg: Config, jobid: str) -> str:
     """Short human description of a job: ``id partition name state``."""
-    return ssh.capture(cfg.ssh_host, f"squeue -j {jobid} -h -o '%i %P %j %T'", check=False)
+    return ssh.capture(
+        cfg.ssh_host, f"squeue -j {shlex.quote(jobid)} -h -o '%i %P %j %T'", check=False
+    )
 
 
 def cancel(cfg: Config, jobid: str) -> int:
-    return ssh.run(cfg.ssh_host, f"scancel {jobid}", check=False)
+    # ``jobid`` comes from a typer.Argument — quote so ``rci cancel '1; …'``
+    # can't smuggle a second command into the remote shell.
+    return ssh.run(cfg.ssh_host, f"scancel {shlex.quote(jobid)}", check=False)
 
 
 def cancel_all(cfg: Config) -> int:
-    return ssh.run(cfg.ssh_host, f"scancel -u {cfg.user}", check=False)
+    return ssh.run(cfg.ssh_host, f"scancel -u {shlex.quote(cfg.user)}", check=False)
 
 
 def cancel_jobids(cfg: Config, jobids: list[str]) -> int:
     """Cancel a batch of job ids in a single ``scancel`` call."""
     if not jobids:
         return 0
-    return ssh.run(cfg.ssh_host, "scancel " + " ".join(jobids), check=False)
+    return ssh.run(cfg.ssh_host, "scancel " + " ".join(shlex.quote(j) for j in jobids), check=False)
 
 
 def list_jobs_brief(cfg: Config) -> str:
-    cmd = f"squeue -u {cfg.user} -h -o '%.10i %.9P %.10j %.8T'"
+    cmd = f"squeue -u {shlex.quote(cfg.user)} -h -o '%.10i %.9P %.10j %.8T'"
     return ssh.capture(cfg.ssh_host, cmd, check=False)
 
 
