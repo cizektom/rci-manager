@@ -28,6 +28,11 @@ def capture(
         check=check,
         capture_output=True,
         text=True,
+        # Detach stdin from the parent TTY — ``capture_output=True`` only
+        # rewires stdout/stderr. With stdin inherited, ssh races the TUI
+        # for keystrokes from the same terminal; on every background
+        # refresh tick a fraction of typed characters disappears into ssh.
+        stdin=subprocess.DEVNULL,
     )
     if merge_stderr:
         return (proc.stdout + proc.stderr).strip()

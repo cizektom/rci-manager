@@ -9,6 +9,7 @@ over to ssh for shell-in / claude attach, then re-render on return.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -1771,6 +1772,27 @@ class RciApp(App):
             return
         # New config — fire an immediate refresh; the interval tick continues normally.
         self.query_one(JobsPanel).refresh_jobs()
+
+    def action_quit(self) -> None:
+        # Refresh runs squeue over ssh in a @work(thread=True) worker; on a
+        # slow network that thread is blocked in subprocess.run and can't be
+        # cancelled. Textual's graceful exit, plus Python's concurrent.futures
+        # atexit hook, then t.join()s it — so ``q`` appears to hang for
+        # seconds (Ctrl-C then trips an Event-loop-closed race). Bypass: drop
+        # back into cooked mode and _exit, skipping atexit thread joining.
+        # In-flight squeue subprocesses are read-only and get reaped by the OS.
+        try:
+            if self._driver is not None:
+                self._driver.stop_application_mode()
+                # stop_application_mode enqueues the restore sequences on a
+                # background writer thread; close() drains and joins it so
+                # the bytes actually reach the terminal before _exit kills
+                # everything (otherwise the cursor / alt-screen state is
+                # left half-restored — zsh paints a stray ``%``).
+                self._driver.close()
+        except Exception:
+            pass
+        os._exit(0)
 
     def action_toggle_theme(self) -> None:
         # Minimal cycle: stick with the terminal palette by default, fall back
