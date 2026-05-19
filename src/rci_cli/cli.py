@@ -173,12 +173,13 @@ def cancel_all() -> None:
 
 @app.command("cancel-dev")
 def cancel_dev() -> None:
-    """Cancel all rci-cli managed allocations (``dev*`` + ``editor`` + ``agent*``)."""
+    """Cancel all rci-cli managed allocations (``dev*`` + ``editor`` + ``agent*`` + ``workspace*``)."""
     cfg = _cfg()
     jobs = (
         slurm.jobs_by_prefix(cfg, cfg.dev_job_name)
         + slurm.jobs_by_prefix(cfg, cfg.editor_job_name)
         + slurm.jobs_by_prefix(cfg, cfg.agent_job_name)
+        + slurm.jobs_by_prefix(cfg, cfg.workspace_job_name)
     )
     if not jobs:
         rprint("No rci-managed allocations to cancel.")
@@ -301,11 +302,15 @@ def workspace(
     """Open a tmux workspace on the compute node (2 claude panes + bash).
 
     Reuses an existing rci-managed allocation if one is running, otherwise
-    spawns a ``dev-N`` (same pool as ``rci shell``). Subsequent invocations
-    against the same job reattach to the live session — disconnect-safe.
+    spawns a ``workspace-N``. Subsequent invocations against the same job
+    reattach to the live session — disconnect-safe.
     """
     cfg = _cfg()
-    a = _require_alloc(cfg, require_gpu=gpu)
+    a = _require_alloc(
+        cfg,
+        require_gpu=gpu,
+        spawn_name=slurm.next_indexed_name(cfg, cfg.workspace_job_name),
+    )
     sys.exit(launch.launch_workspace(a, launch.resolve_folder(folder, cfg), cfg))
 
 

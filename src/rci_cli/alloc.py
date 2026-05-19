@@ -26,9 +26,11 @@ class AllocationError(RuntimeError):
 
 
 def _running_managed(cfg: Config) -> list[slurm.Job]:
-    """Every running rci-managed allocation, both dev-N and editor."""
-    return slurm.jobs_by_prefix(cfg, cfg.dev_job_name) + slurm.jobs_by_prefix(
-        cfg, cfg.editor_job_name
+    """Every running rci-managed allocation: dev-N, editor, and workspace-N."""
+    return (
+        slurm.jobs_by_prefix(cfg, cfg.dev_job_name)
+        + slurm.jobs_by_prefix(cfg, cfg.editor_job_name)
+        + slurm.jobs_by_prefix(cfg, cfg.workspace_job_name)
     )
 
 

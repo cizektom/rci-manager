@@ -1270,6 +1270,8 @@ class JobsPanel(Container):
         # among current jobs.
         if kind == "editor":
             default_name = cfg.editor_job_name
+        elif kind == "workspace":
+            default_name = self._suggest_workspace_name(cfg)
         else:
             default_name = self._suggest_dev_name(cfg)
         self.app.push_screen(
@@ -1286,6 +1288,11 @@ class JobsPanel(Container):
         """Same gap-reuse logic as ``_suggest_dev_name``, but for the agent pool."""
         n = slurm.lowest_unused_index((r.name for r in self._rows), cfg.agent_job_name)
         return f"{cfg.agent_job_name}-{n}"
+
+    def _suggest_workspace_name(self, cfg: Config) -> str:
+        """Same gap-reuse logic as ``_suggest_dev_name``, but for the workspace pool."""
+        n = slurm.lowest_unused_index((r.name for r in self._rows), cfg.workspace_job_name)
+        return f"{cfg.workspace_job_name}-{n}"
 
     def _after_new_instance(
         self, kind: str, folder: str, result: "AllocParams | str | None"

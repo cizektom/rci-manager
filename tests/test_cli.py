@@ -228,7 +228,7 @@ def test_agent_fails_on_unparseable_salloc_output(monkeypatch) -> None:
 
 
 def test_cancel_dev_sweeps_dev_editor_and_agent(monkeypatch) -> None:
-    """The cleanup command must include all three rci-managed prefixes."""
+    """The cleanup command must include all four rci-managed prefixes."""
     called: list[str] = []
 
     def fake_jobs_by_prefix(cfg, prefix, *, state="RUNNING"):
@@ -252,8 +252,8 @@ def test_cancel_dev_sweeps_dev_editor_and_agent(monkeypatch) -> None:
 
     result = runner.invoke(app, ["cancel-dev"])
     assert result.exit_code == 0, result.stdout
-    assert called == ["dev", "editor", "agent"]
-    assert cancelled == [["dev1", "editor1", "agent1"]]
+    assert called == ["dev", "editor", "agent", "workspace"]
+    assert cancelled == [["dev1", "editor1", "agent1", "workspace1"]]
 
 
 def pytest_fail(msg: str):  # tiny shim used in monkeypatched fakes

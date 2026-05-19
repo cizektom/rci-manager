@@ -42,6 +42,9 @@ class Config:
     # editor allocation at a time (subsequent Editor presses attach to it),
     # so no numbering suffix is needed.
     editor_job_name: str = "editor"
+    # Name prefix for jobs spawned from the Workspace flow when no existing
+    # alloc is reused. Numbered ``<workspace_job_name>-N`` like dev jobs.
+    workspace_job_name: str = "workspace"
     # Name prefix for jobs spawned from the Agent flow (``rci agent`` / TUI ``a``).
     # Always spawns a fresh ``<agent_job_name>-N`` — no reuse, since each press
     # starts a new ``claude remote-control`` server you'd pair with from mobile.
