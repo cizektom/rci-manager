@@ -78,8 +78,9 @@ def _patch_ssh(monkeypatch) -> dict:
         captured["tty"] = tty
         return 0
 
-    def fake_run_local(argv, *, check=True):
+    def fake_run_local(argv, *, check=True, quiet=False):
         captured["local_argv"] = list(argv)
+        captured["local_quiet"] = quiet
         return 0
 
     monkeypatch.setattr(ssh, "run", fake_run)
@@ -108,6 +109,26 @@ def test_launch_editor_uses_vscode_remote_uri(monkeypatch, cfg: Config) -> None:
     argv = captured["local_argv"]
     # Either ["code", "--folder-uri", URI] or ["cmd.exe", "/c", "code", "--folder-uri", URI]
     assert any("vscode-remote://ssh-remote+n01/home/cizekto2/sam2rl" in a for a in argv)
+    # ``quiet=True`` — VS Code / cmd.exe stdio would otherwise paint over
+    # the live TUI's alt screen on first connect.
+    assert captured["local_quiet"] is True
+
+
+def test_run_local_quiet_sends_stdio_to_devnull(monkeypatch) -> None:
+    """``quiet=True`` must detach stdin/stdout/stderr from the parent TTY —
+    same fix lineage as ssh.capture's stdin=DEVNULL."""
+    import subprocess
+    seen: dict = {}
+
+    def fake_run(argv, **kwargs):
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ssh.run_local(["echo", "hi"], quiet=True)
+    assert seen["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert seen["kwargs"]["stdout"] is subprocess.DEVNULL
+    assert seen["kwargs"]["stderr"] is subprocess.DEVNULL
 
 
 def test_launch_agent_runs_detached_with_nohup(monkeypatch, cfg: Config) -> None:

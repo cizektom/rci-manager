@@ -148,12 +148,18 @@ def launch_editor(alloc: Allocation, folder: str, cfg: Config) -> int:
     routing logic stays VS-Code-specific for now. On WSL the local ``code``
     wrapper auto-injects ``--remote wsl+<distro>`` which hijacks the Remote-SSH
     connection — invoke the Windows ``code.cmd`` via ``cmd.exe`` instead.
+
+    ``quiet=True`` so the launcher's stdio doesn't paint over the live TUI —
+    VS Code on first connect prints Remote-SSH installer chatter, and cmd.exe
+    occasionally prints its own status, both of which corrupt the alt screen.
     """
     print(f"→ {alloc.node} (job {alloc.jobid}): opening editor on {folder}")
     uri = f"vscode-remote://ssh-remote+{alloc.node}{folder}"
     if os.path.exists("/mnt/c"):
-        return ssh.run_local(["cmd.exe", "/c", "code", "--folder-uri", uri], check=False)
-    return ssh.run_local(["code", "--folder-uri", uri], check=False)
+        return ssh.run_local(
+            ["cmd.exe", "/c", "code", "--folder-uri", uri], check=False, quiet=True
+        )
+    return ssh.run_local(["code", "--folder-uri", uri], check=False, quiet=True)
 
 
 WORKSPACE_LOG_DIR = "$HOME/.rci/workspace-logs"

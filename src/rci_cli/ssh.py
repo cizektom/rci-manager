@@ -84,6 +84,21 @@ def port_forward(host: str, local_port: int, remote_port: int) -> int:
     ).returncode
 
 
-def run_local(argv: Sequence[str], *, check: bool = True) -> int:
-    """Run a local command, inheriting the TTY. Used for the WSL ``cmd.exe`` path."""
+def run_local(argv: Sequence[str], *, check: bool = True, quiet: bool = False) -> int:
+    """Run a local command. ``quiet=True`` detaches stdio from the parent TTY.
+
+    Used by the editor launch so VS Code / cmd.exe doesn't bleed its
+    startup chatter onto the live TUI's alt screen — stdout/stderr
+    redirected to DEVNULL, stdin too (same race lineage as
+    :func:`capture`: a subprocess that inherits the TUI's stdin would
+    race the foreground app for keystrokes).
+    """
+    if quiet:
+        return subprocess.run(
+            list(argv),
+            check=check,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
     return subprocess.run(list(argv), check=check).returncode
