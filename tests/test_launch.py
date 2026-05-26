@@ -293,7 +293,10 @@ def test_launch_workspace_three_pane_layout(monkeypatch, cfg: Config) -> None:
     )
     setup_script = calls[0]["stdin"]
     # 1) Initial pane starts as claude (becomes top-left after splits).
-    assert "new-session -d -s main -c /home/cizekto2/sam2rl" in setup_script
+    #    ``-f /dev/null`` keeps the workspace tmux server isolated from
+    #    user/system tmux configs (one of which kills tmux on mouse
+    #    selection in this environment).
+    assert "-f /dev/null new-session -d -s main -c /home/cizekto2/sam2rl" in setup_script
     # 2) Bash row at the bottom, 30% tall — splits the whole window.
     assert "split-window -v -p 30 -t main -c /home/cizekto2/sam2rl" in setup_script
     # 3) Halve the top by splitting pane 0 specifically; new pane starts

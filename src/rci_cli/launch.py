@@ -283,8 +283,20 @@ def launch_workspace(
     # literal ``-t .N`` would otherwise hit the wrong cell.
     inner_lines: list[str] = []
     first_pane = claude_pane if agents > 0 else bash_pane
+    # ``-f /dev/null`` starts the workspace's tmux server with NO config
+    # loaded — neither ~/.tmux.conf nor /etc/tmux.conf. Diagnosed cause:
+    # user configs in this environment include a setting that kills the
+    # whole tmux on mouse-selection release (reproducible with vanilla
+    # ``tmux new -s test``; suppressed with ``tmux -f /dev/null …``).
+    # Trade-off: the workspace runs with stock tmux bindings (Ctrl-B
+    # prefix etc.), not the user's customizations — accepted for
+    # stability. The flag is only meaningful on the first invocation
+    # that actually starts the server; subsequent ``tmux -L`` commands
+    # on the same socket hit the running server and inherit its
+    # already-loaded (empty) config.
     inner_lines.append(
-        f"tmux -L {sock_q} new-session -d -s {sess_q} -c {folder_q} {first_pane}"
+        f"tmux -L {sock_q} -f /dev/null new-session -d -s {sess_q} "
+        f"-c {folder_q} {first_pane}"
     )
     # Force ``destroy-unattached off`` on our session: workspace lifetime is
     # governed by the holder srun's ``while has-session`` loop, not by
