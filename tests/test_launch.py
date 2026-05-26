@@ -250,6 +250,9 @@ def test_launch_workspace_disables_destroy_unattached(monkeypatch, cfg: Config) 
     # We start the server with ``-f /dev/null`` so the user's prefix binding
     # from ~/.tmux.conf is lost; restore Ctrl-Space explicitly.
     assert "set-option -g prefix C-Space" in setup_script
+    # Mouse scrolling: stock mouse bindings are safe; we explicitly enable
+    # them here because -f /dev/null also drops the user's mouse-on line.
+    assert "set-option -g mouse on" in setup_script
 
 
 def test_launch_workspace_holder_keeps_cgroup_alive(monkeypatch, cfg: Config) -> None:

@@ -314,6 +314,15 @@ def launch_workspace(
     inner_lines.append(
         f"tmux -L {sock_q} set-option -g prefix C-Space"
     )
+    # Mouse scrolling: tmux's stock mouse bindings are safe — selection
+    # enters copy-mode, release runs the built-in ``copy-selection-and-cancel``
+    # which writes to tmux's internal buffer (no shell-out, no detach).
+    # The destructive behavior in the user's ~/.tmux.conf was a custom
+    # mouse binding, not ``mouse on`` itself; with -f /dev/null we get
+    # the safe defaults.
+    inner_lines.append(
+        f"tmux -L {sock_q} set-option -g mouse on"
+    )
 
     if agents > 0 and terminals > 0:
         # Vertical split for the bottom (terminals) row. ``-p 30`` matches
