@@ -171,19 +171,29 @@ def workspace_log_path(jobid: str) -> str:
 
 
 def _pane_cmd(folder: str, *, command: str = "") -> str:
-    """Shell command for a tmux pane: cd + venv + PATH + optional payload + bash.
+    """Shell command for a tmux pane: cd + venv + PATH + optional payload +
+    auto-respawning bash.
 
-    Empty ``command`` ⇒ drops straight into ``exec bash -i``. Non-empty
-    runs ``command`` first, then *falls back* to interactive bash —
-    important for tmux layout stability: if ``command`` exits (or isn't
-    installed on the node, exit 127), the pane stays alive instead of
-    collapsing and tmux re-tiling around it.
+    Empty ``command`` ⇒ drops straight into the bash respawn loop. Non-empty
+    runs ``command`` first, then falls back to the loop — important for
+    tmux layout stability: if ``command`` exits (or isn't installed on the
+    node, exit 127), the pane stays alive instead of collapsing and tmux
+    re-tiling around it.
+
+    ``while true; do bash -i; sleep 0.1; done`` instead of ``exec bash -i``:
+    a plain mouse selection in some terminals (Windows Terminal especially)
+    sends escape sequences that reach bash and trip an EOF-like exit — that
+    would close the pane, and once every pane closes the holder loop ends
+    and the whole tmux session terminates. The respawn loop hides the bash
+    exit and the pane silently restarts; the ``sleep 0.1`` is a crash-loop
+    guard. Intentional pane kill still works via tmux's ``prefix-x``.
     """
     pre = _remote_preamble(folder)
+    loop = "while true; do bash -i; sleep 0.1; done"
     if command:
-        inner = f"{pre}; {command}; exec bash -i"
+        inner = f"{pre}; {command}; {loop}"
     else:
-        inner = f"{pre}; exec bash -i"
+        inner = f"{pre}; {loop}"
     return f"bash -c {shlex.quote(inner)}"
 
 

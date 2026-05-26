@@ -289,11 +289,15 @@ def test_launch_workspace_three_pane_layout(monkeypatch, cfg: Config) -> None:
     assert "split-window -h -t main.0 -c /home/cizekto2/sam2rl" in setup_script
     assert "select-layout -E -t main.0" in setup_script
     # Initial command of each pane is the right thing: two claude payloads
-    # (top row) and one bash payload (bottom). Check the inner ``exec``
-    # markers from _pane_cmd — these appear inside the shlex-quoted pane
-    # commands embedded in the setup script.
-    assert setup_script.count("claude; exec bash -i") == 2
-    assert setup_script.count("; exec bash -i") == 3  # 2 claude + 1 bare bash
+    # (top row) and one bash payload (bottom). ``while true; do bash -i``
+    # markers from _pane_cmd's respawn loop appear inside the shlex-quoted
+    # pane commands embedded in the setup script — one per pane.
+    assert setup_script.count("claude; while true; do bash -i") == 2
+    assert setup_script.count("while true; do bash -i; sleep 0.1; done") == 3
+    # ``exec bash -i`` from the old, pane-dies-on-bash-exit wrapper must not
+    # come back — accidental selection in Windows Terminal trips EOF on bash
+    # and would otherwise cascade pane closures into a dead session.
+    assert "exec bash -i" not in setup_script
     # Defensive: no send-keys anywhere — that's how we got the L-shape.
     assert "send-keys" not in setup_script
     # No GPU watcher pane in this layout.
@@ -334,9 +338,9 @@ def test_launch_workspace_respects_explicit_pane_counts(
         terminals=2,
     )
     setup_script = calls[0]["stdin"]
-    # 3 claude pane payloads + 2 bash payloads = 5 ``exec bash -i`` markers.
-    assert setup_script.count("claude; exec bash -i") == 3
-    assert setup_script.count("; exec bash -i") == 5
+    # 3 claude pane payloads + 2 bash payloads = 5 respawn-loop markers.
+    assert setup_script.count("claude; while true; do bash -i") == 3
+    assert setup_script.count("while true; do bash -i; sleep 0.1; done") == 5
     # First terminal lives at creation-order pane 1 (vertical split). The
     # second terminal splits pane 1 horizontally.
     assert "split-window -v -p 30 -t main -c" in setup_script
@@ -361,7 +365,7 @@ def test_launch_workspace_terminals_only_layout(monkeypatch, cfg: Config) -> Non
     setup_script = calls[0]["stdin"]
     assert "claude" not in setup_script
     # Only bash panes (2 of them).
-    assert setup_script.count("; exec bash -i") == 2
+    assert setup_script.count("while true; do bash -i; sleep 0.1; done") == 2
     # No top/bottom split.
     assert "split-window -v" not in setup_script
     # Second terminal splits the first horizontally (pane 0 is the only pane).
@@ -381,9 +385,9 @@ def test_launch_workspace_agents_only_layout(monkeypatch, cfg: Config) -> None:
         terminals=0,
     )
     setup_script = calls[0]["stdin"]
-    assert setup_script.count("claude; exec bash -i") == 2
+    assert setup_script.count("claude; while true; do bash -i") == 2
     # 2 claude panes, no bare-bash pane.
-    assert setup_script.count("; exec bash -i") == 2
+    assert setup_script.count("while true; do bash -i; sleep 0.1; done") == 2
     assert "split-window -v" not in setup_script
     assert "split-window -h -t main.0" in setup_script
 
@@ -402,8 +406,8 @@ def test_launch_workspace_single_agent_single_terminal(
         terminals=1,
     )
     setup_script = calls[0]["stdin"]
-    assert setup_script.count("claude; exec bash -i") == 1
-    assert setup_script.count("; exec bash -i") == 2
+    assert setup_script.count("claude; while true; do bash -i") == 1
+    assert setup_script.count("while true; do bash -i; sleep 0.1; done") == 2
     assert "split-window -v -p 30 -t main -c" in setup_script
     assert "split-window -h" not in setup_script
     assert "select-layout -E" not in setup_script
@@ -422,5 +426,5 @@ def test_launch_workspace_falls_back_to_cfg_defaults(
         cfg,
     )
     setup_script = calls[0]["stdin"]
-    assert setup_script.count("claude; exec bash -i") == 2
-    assert setup_script.count("; exec bash -i") == 3
+    assert setup_script.count("claude; while true; do bash -i") == 2
+    assert setup_script.count("while true; do bash -i; sleep 0.1; done") == 3
