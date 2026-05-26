@@ -314,14 +314,26 @@ def launch_workspace(
     inner_lines.append(
         f"tmux -L {sock_q} set-option -g prefix C-Space"
     )
-    # Mouse scrolling: tmux's stock mouse bindings are safe — selection
-    # enters copy-mode, release runs the built-in ``copy-selection-and-cancel``
-    # which writes to tmux's internal buffer (no shell-out, no detach).
-    # The destructive behavior in the user's ~/.tmux.conf was a custom
-    # mouse binding, not ``mouse on`` itself; with -f /dev/null we get
-    # the safe defaults.
+    # Mouse scrolling: enable ``mouse on`` for wheel-driven scrollback.
+    # Bug observed on this cluster's tmux: the default
+    # ``MouseDragEnd1Pane → copy-selection-and-cancel`` path tears the
+    # whole session down on selection release (reproducible even with
+    # ``tmux -f /dev/null new -s test; tmux set -g mouse on``). Unbind
+    # the drag entry points so mouse-drag never enters copy-mode in the
+    # first place — wheel bindings (``WheelUpPane`` / ``WheelDownPane``)
+    # stay live, scrolling still works. Drag-select then becomes a
+    # no-op in tmux; Shift+drag still gives native terminal selection.
     inner_lines.append(
         f"tmux -L {sock_q} set-option -g mouse on"
+    )
+    inner_lines.append(
+        f"tmux -L {sock_q} unbind-key -T root MouseDrag1Pane"
+    )
+    inner_lines.append(
+        f"tmux -L {sock_q} unbind-key -T copy-mode MouseDragEnd1Pane"
+    )
+    inner_lines.append(
+        f"tmux -L {sock_q} unbind-key -T copy-mode-vi MouseDragEnd1Pane"
     )
 
     if agents > 0 and terminals > 0:
