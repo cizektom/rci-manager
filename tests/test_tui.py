@@ -1349,3 +1349,273 @@ async def test_agent_kind_bypasses_pending_row_guard(monkeypatch, tmp_path) -> N
         panel._after_folder("agent", "")
         await pilot.pause()
         assert isinstance(app.screen, AgentOptionsModal)
+
+
+# ── Workspace flow ──────────────────────────────────────────────────────────
+
+
+async def test_workspace_flow_opens_workspace_options_modal_first(
+    monkeypatch, tmp_path
+) -> None:
+    """Pressing 'w' (Workspace) opens ``WorkspaceOptionsModal`` before the
+    resources modal — same 3-step ordering as the agent flow."""
+    from textual.widgets import Input
+
+    from rci_cli.tui import WorkspaceOptionsModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._after_folder("workspace", "")
+        await pilot.pause()
+        assert isinstance(app.screen, WorkspaceOptionsModal)
+        scr = app.screen
+        # Prefilled from cfg defaults (2 agents + 1 terminal).
+        assert scr.query_one("#workspace-agents", Input).value == "2"
+        assert scr.query_one("#workspace-terminals", Input).value == "1"
+
+
+async def test_workspace_options_modal_returns_options(monkeypatch, tmp_path) -> None:
+    """Submitting the workspace-options modal returns a :class:`WorkspaceOptions`
+    with the user's pane counts."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import WorkspaceOptions, WorkspaceOptionsModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: dict[str, WorkspaceOptions | None] = {"opts": None}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            WorkspaceOptionsModal(Config()),
+            lambda o: captured.update(opts=o),
+        )
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#workspace-agents", Input).value = "3"
+        scr.query_one("#workspace-terminals", Input).value = "2"
+        scr._do_submit()
+        await pilot.pause()
+
+    o = captured["opts"]
+    assert o is not None
+    assert o.agents == 3
+    assert o.terminals == 2
+
+
+async def test_workspace_options_modal_rejects_all_zero(monkeypatch, tmp_path) -> None:
+    """``agents=0, terminals=0`` is rejected with a notification rather than
+    silently backfilling — the user almost certainly meant something else."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import WorkspaceOptions, WorkspaceOptionsModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: dict[str, object] = {"called": False}
+
+    def _capture(o: WorkspaceOptions | None) -> None:
+        captured["called"] = True
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(WorkspaceOptionsModal(Config()), _capture)
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#workspace-agents", Input).value = "0"
+        scr.query_one("#workspace-terminals", Input).value = "0"
+        scr._do_submit()
+        await pilot.pause()
+        # Modal stays up — no dismiss callback fired.
+        assert isinstance(app.screen, WorkspaceOptionsModal)
+
+    assert captured["called"] is False
+
+
+async def test_workspace_options_modal_persists_across_sessions(
+    monkeypatch, tmp_path
+) -> None:
+    """Submitting writes the pane counts to state.json; a fresh modal
+    prefills with them (remembered defaults across launches)."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import WorkspaceOptionsModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(WorkspaceOptionsModal(Config()), lambda _: None)
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#workspace-agents", Input).value = "4"
+        scr.query_one("#workspace-terminals", Input).value = "2"
+        scr._do_submit()
+        await pilot.pause()
+        # Re-open: should pre-fill 4/2, not the cfg defaults.
+        app.push_screen(WorkspaceOptionsModal(Config()), lambda _: None)
+        await pilot.pause()
+        scr2 = app.screen
+        assert scr2.query_one("#workspace-agents", Input).value == "4"
+        assert scr2.query_one("#workspace-terminals", Input).value == "2"
+
+
+async def test_workspace_options_step_advances_to_resources_modal(
+    monkeypatch, tmp_path
+) -> None:
+    """After WorkspaceOptionsModal submits with no running row highlighted,
+    the resources modal opens with the suggested ``workspace-N`` name."""
+    from textual.widgets import Input
+
+    from rci_cli.tui import NewInstanceModal, WorkspaceOptionsModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._after_folder("workspace", "")
+        await pilot.pause()
+        assert isinstance(app.screen, WorkspaceOptionsModal)
+        scr = app.screen
+        scr.query_one("#workspace-agents", Input).value = "3"
+        scr.query_one("#workspace-terminals", Input).value = "2"
+        scr._do_submit()
+        await pilot.pause()
+        # Next screen is the resources modal with the workspace suggestion.
+        assert isinstance(app.screen, NewInstanceModal)
+        res = app.screen
+        assert res.query_one("#job-name", Input).value == "workspace-1"
+        # Panel cached the WorkspaceOptions so step-back can re-prefill them.
+        assert panel._pending_workspace_opts is not None
+        assert panel._pending_workspace_opts.agents == 3
+        assert panel._pending_workspace_opts.terminals == 2
+
+
+async def test_workspace_options_modal_back_replays_folder_picker(
+    monkeypatch, tmp_path
+) -> None:
+    """q/escape on the workspace-options modal (allow_back=True) re-opens
+    the folder picker instead of dropping the flow."""
+    from rci_cli.tui import FolderModal, WorkspaceOptionsModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._after_folder("workspace", "")
+        await pilot.pause()
+        assert isinstance(app.screen, WorkspaceOptionsModal)
+        app.screen.dismiss("back")
+        await pilot.pause()
+        assert isinstance(app.screen, FolderModal)
+
+
+async def test_workspace_options_modal_prefills_from_pending_opts(
+    monkeypatch, tmp_path
+) -> None:
+    """If the panel has cached WorkspaceOptions (user stepped back from
+    resources), the next WorkspaceOptionsModal pre-fills with them."""
+    from textual.widgets import Input
+
+    from rci_cli.tui import WorkspaceOptions, WorkspaceOptionsModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._pending_workspace_opts = WorkspaceOptions(agents=4, terminals=3)
+        panel._after_folder("workspace", "")
+        await pilot.pause()
+        assert isinstance(app.screen, WorkspaceOptionsModal)
+        scr = app.screen
+        assert scr.query_one("#workspace-agents", Input).value == "4"
+        assert scr.query_one("#workspace-terminals", Input).value == "3"
+
+
+async def test_workspace_flow_skips_modal_when_session_exists(
+    monkeypatch, tmp_path
+) -> None:
+    """Running row + existing tmux session ⇒ probe returns True ⇒ no options
+    modal, straight to attach. Pane counts would be ignored anyway, so we
+    spare the user the click."""
+    from rci_cli.tui import WorkspaceOptionsModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(launch, "workspace_session_exists", lambda alloc: True)
+
+    attached: dict = {}
+
+    def fake_attach(self, kind, alloc, folder, **kwargs):
+        attached["kind"] = kind
+        attached["node"] = alloc.node
+
+    monkeypatch.setattr(JobsPanel, "_attach_to", fake_attach)
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._rows = [
+            JobRow(
+                jobid="111", partition="cpufast", name="workspace-1", state="RUNNING",
+                time="0:05", limit="1:00:00", cpus="2", mem="4G", gres="N/A", node="n01",
+            ),
+        ]
+        panel._render_rows()
+        panel._after_folder("workspace", "")
+        # Worker thread runs the probe + call_from_thread back onto the
+        # UI thread; pause a few times to let both sides resolve.
+        for _ in range(5):
+            await pilot.pause()
+
+    assert attached.get("kind") == "workspace"
+    assert attached.get("node") == "n01"
+
+
+async def test_workspace_flow_opens_modal_when_session_missing(
+    monkeypatch, tmp_path
+) -> None:
+    """Running row but no tmux session yet ⇒ probe returns False ⇒ the
+    options modal opens so the user picks the layout that will actually
+    be built (the layout knobs matter on this path)."""
+    from rci_cli.tui import WorkspaceOptionsModal
+
+    monkeypatch.setattr(slurm, "list_jobs", lambda cfg: "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(launch, "workspace_session_exists", lambda alloc: False)
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(JobsPanel)
+        panel._rows = [
+            JobRow(
+                jobid="111", partition="cpufast", name="dev-1", state="RUNNING",
+                time="0:05", limit="1:00:00", cpus="2", mem="4G", gres="N/A", node="n01",
+            ),
+        ]
+        panel._render_rows()
+        panel._after_folder("workspace", "")
+        for _ in range(5):
+            await pilot.pause()
+        assert isinstance(app.screen, WorkspaceOptionsModal)

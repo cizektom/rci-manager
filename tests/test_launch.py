@@ -283,8 +283,11 @@ def test_launch_workspace_three_pane_layout(monkeypatch, cfg: Config) -> None:
     # 2) Bash row at the bottom, 30% tall — splits the whole window.
     assert "split-window -v -p 30 -t main -c /home/cizekto2/sam2rl" in setup_script
     # 3) Halve the top by splitting pane 0 specifically; new pane starts
-    #    as claude (the second top-row claude).
-    assert "split-window -h -p 50 -t main.0 -c /home/cizekto2/sam2rl" in setup_script
+    #    as claude (the second top-row claude). The post-split
+    #    ``select-layout -E`` rebalances widths so the two claudes share
+    #    the row evenly.
+    assert "split-window -h -t main.0 -c /home/cizekto2/sam2rl" in setup_script
+    assert "select-layout -E -t main.0" in setup_script
     # Initial command of each pane is the right thing: two claude payloads
     # (top row) and one bash payload (bottom). Check the inner ``exec``
     # markers from _pane_cmd — these appear inside the shlex-quoted pane
@@ -314,3 +317,152 @@ def test_launch_workspace_per_job_socket(monkeypatch, cfg: Config) -> None:
 
 def test_workspace_log_path_namespaces_per_jobid() -> None:
     assert launch.workspace_log_path("5555") == "$HOME/.rci/workspace-logs/5555.log"
+
+
+def test_workspace_session_exists_true_when_capture_succeeds(monkeypatch) -> None:
+    """``has-session`` exits 0 ⇒ ssh.capture returns normally ⇒ probe says yes.
+
+    Captures the exact command sent so we can assert the per-job socket
+    name is wired into the probe (mismatched socket ⇒ probe checks the
+    wrong daemon ⇒ always misses)."""
+    seen: dict = {}
+
+    def fake_capture(host, cmd, **kwargs):
+        seen["host"] = host
+        seen["cmd"] = cmd
+        return ""
+
+    monkeypatch.setattr(ssh, "capture", fake_capture)
+    assert launch.workspace_session_exists(Allocation(node="g05", jobid="5555")) is True
+    assert seen["host"] == "g05"
+    assert "tmux -L rci-ws-5555 has-session -t main" in seen["cmd"]
+
+
+def test_workspace_session_exists_false_when_capture_raises(monkeypatch) -> None:
+    """``has-session`` exits 1 ⇒ subprocess raises ⇒ probe says no session."""
+    import subprocess
+
+    def fake_capture(host, cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, ["ssh", host, cmd])
+
+    monkeypatch.setattr(ssh, "capture", fake_capture)
+    assert launch.workspace_session_exists(Allocation(node="g05", jobid="5555")) is False
+
+
+def test_workspace_session_exists_swallows_unexpected_errors(monkeypatch) -> None:
+    """Probe must collapse network/timeout/etc. to False rather than crashing
+    the caller — worst case is "show the modal we didn't need to", and the
+    setup script's own ``has-session`` guard still keeps things idempotent."""
+
+    def fake_capture(host, cmd, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(ssh, "capture", fake_capture)
+    assert launch.workspace_session_exists(Allocation(node="g05", jobid="5555")) is False
+
+
+def test_launch_workspace_respects_explicit_pane_counts(
+    monkeypatch, cfg: Config
+) -> None:
+    """``agents=3, terminals=2`` ⇒ three claude panes on top, two bash on
+    bottom. Each row gets a ``select-layout -E`` to spread its members
+    evenly without disturbing the other row."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/cizekto2/sam2rl",
+        cfg,
+        agents=3,
+        terminals=2,
+    )
+    setup_script = calls[0]["stdin"]
+    # 3 claude pane payloads + 2 bash payloads = 5 ``exec bash -i`` markers.
+    assert setup_script.count("claude; exec bash -i") == 3
+    assert setup_script.count("; exec bash -i") == 5
+    # First terminal lives at creation-order pane 1 (vertical split). The
+    # second terminal splits pane 1 horizontally.
+    assert "split-window -v -p 30 -t main -c" in setup_script
+    assert setup_script.count("split-window -h -t main.0") == 2  # two extra agents
+    assert setup_script.count("split-window -h -t main.1") == 1  # one extra terminal
+    # Both rows get evened.
+    assert "select-layout -E -t main.0" in setup_script
+    assert "select-layout -E -t main.1" in setup_script
+
+
+def test_launch_workspace_terminals_only_layout(monkeypatch, cfg: Config) -> None:
+    """``agents=0, terminals=2`` ⇒ single row of bash panes, no vertical
+    split, no claude payload, no top-row select-layout."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/cizekto2/sam2rl",
+        cfg,
+        agents=0,
+        terminals=2,
+    )
+    setup_script = calls[0]["stdin"]
+    assert "claude" not in setup_script
+    # Only bash panes (2 of them).
+    assert setup_script.count("; exec bash -i") == 2
+    # No top/bottom split.
+    assert "split-window -v" not in setup_script
+    # Second terminal splits the first horizontally (pane 0 is the only pane).
+    assert "split-window -h -t main.0" in setup_script
+    assert "select-layout -E -t main.0" in setup_script
+
+
+def test_launch_workspace_agents_only_layout(monkeypatch, cfg: Config) -> None:
+    """``agents=2, terminals=0`` ⇒ single row of claude panes, no bash, no
+    vertical split."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/cizekto2/sam2rl",
+        cfg,
+        agents=2,
+        terminals=0,
+    )
+    setup_script = calls[0]["stdin"]
+    assert setup_script.count("claude; exec bash -i") == 2
+    # 2 claude panes, no bare-bash pane.
+    assert setup_script.count("; exec bash -i") == 2
+    assert "split-window -v" not in setup_script
+    assert "split-window -h -t main.0" in setup_script
+
+
+def test_launch_workspace_single_agent_single_terminal(
+    monkeypatch, cfg: Config
+) -> None:
+    """``agents=1, terminals=1`` ⇒ one claude on top + one bash on bottom,
+    no extra horizontal splits, no select-layout calls (nothing to even out)."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/cizekto2/sam2rl",
+        cfg,
+        agents=1,
+        terminals=1,
+    )
+    setup_script = calls[0]["stdin"]
+    assert setup_script.count("claude; exec bash -i") == 1
+    assert setup_script.count("; exec bash -i") == 2
+    assert "split-window -v -p 30 -t main -c" in setup_script
+    assert "split-window -h" not in setup_script
+    assert "select-layout -E" not in setup_script
+
+
+def test_launch_workspace_falls_back_to_cfg_defaults(
+    monkeypatch, cfg: Config
+) -> None:
+    """``agents=None, terminals=None`` ⇒ use ``cfg.workspace_agents`` /
+    ``cfg.workspace_terminals``. Confirms the cfg-driven path matches the
+    historical default (2 agents + 1 terminal)."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/cizekto2/sam2rl",
+        cfg,
+    )
+    setup_script = calls[0]["stdin"]
+    assert setup_script.count("claude; exec bash -i") == 2
+    assert setup_script.count("; exec bash -i") == 3

@@ -166,9 +166,11 @@ class AllocParams:
 
     The agent-specific fields (``permission_mode``, ``spawn_mode``, ``capacity``)
     are populated downstream when the Agent flow merges its
-    :class:`AgentOptions` into the resources params before submission. Other
-    flows leave them at their defaults and the agent launcher (irrelevant
-    there) falls back to ``cfg.agent_*``.
+    :class:`AgentOptions` into the resources params before submission. The
+    workspace-specific fields (``workspace_agents``, ``workspace_terminals``)
+    do the same for the Workspace flow. Other flows leave them at their
+    defaults and the respective launchers (irrelevant there) fall back to
+    the matching ``cfg.*`` values.
     """
 
     partition: str
@@ -180,6 +182,8 @@ class AllocParams:
     permission_mode: str = ""
     spawn_mode: str = ""
     capacity: int = 0
+    workspace_agents: int = 0
+    workspace_terminals: int = 0
 
     @property
     def kind(self) -> str:
@@ -198,6 +202,20 @@ class AgentOptions:
     permission_mode: str
     spawn_mode: str
     capacity: int
+
+
+@dataclass(frozen=True)
+class WorkspaceOptions:
+    """Result of :class:`WorkspaceOptionsModal` — pane counts for the tmux layout.
+
+    ``agents`` claude panes in the top row, ``terminals`` bash panes in the
+    bottom row. Merged into :class:`AllocParams` (or passed straight to
+    :func:`launch.launch_workspace` for the attach-to-existing-alloc path)
+    before submission.
+    """
+
+    agents: int
+    terminals: int
 
 
 # ``claude remote-control --permission-mode`` choices.
@@ -629,6 +647,115 @@ class AgentOptionsModal(ModalScreen["AgentOptions | str | None"]):
         self.dismiss("back" if self.allow_back else None)
 
 
+class WorkspaceOptionsModal(ModalScreen["WorkspaceOptions | str | None"]):
+    """Configure the tmux pane layout (claude agents + bash terminals) before
+    picking resources.
+
+    Step 2 of the Workspace flow (folder → **workspace options** → resources →
+    submit/attach). Same modal/back-step contract as :class:`AgentOptionsModal`.
+
+    Dismiss values:
+      - :class:`WorkspaceOptions` → user clicked Submit
+      - ``None`` → user clicked the explicit Cancel button (abort)
+      - the string ``"back"`` → user pressed ``q``/``escape`` while
+        ``allow_back=True`` so the caller can re-open the folder picker.
+    """
+
+    AUTO_FOCUS: ClassVar[str] = ""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape,q", "cancel", "Cancel", show=False, priority=True),
+        Binding("enter", "submit", "Submit", show=False),
+    ]
+
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        allow_back: bool = False,
+        prefill: "WorkspaceOptions | None" = None,
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.allow_back = allow_back
+        # Prefill priority: explicit prefill (e.g. stepped back from
+        # resources) > persisted last-used value > cfg defaults. Persisting
+        # the user's last choice across sessions matches the resources
+        # modal's behavior.
+        if prefill is not None:
+            init_agents = prefill.agents
+            init_terminals = prefill.terminals
+        else:
+            saved = state.get_last_workspace_options() or {}
+            a = saved.get("agents")
+            t = saved.get("terminals")
+            init_agents = a if isinstance(a, int) and a >= 0 else cfg.workspace_agents
+            init_terminals = (
+                t if isinstance(t, int) and t >= 0 else cfg.workspace_terminals
+            )
+        self._init_agents = str(init_agents)
+        self._init_terminals = str(init_terminals)
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="modal-box", can_focus=False):
+            yield Label("[b]Workspace options[/b]", id="modal-title")
+            yield Label("Agents  [dim](claude panes, top row)[/dim]")
+            yield Input(
+                value=self._init_agents,
+                id="workspace-agents",
+                type="integer",
+            )
+            yield Label("Terminals  [dim](bash panes, bottom row)[/dim]")
+            yield Input(
+                value=self._init_terminals,
+                id="workspace-terminals",
+                type="integer",
+            )
+            with Horizontal(id="modal-buttons"):
+                yield Button("Next", id="ok")
+                yield Button("Cancel", id="cancel")
+
+    @on(Input.Submitted)
+    def _advance_focus(self) -> None:
+        self.focus_next()
+
+    @on(Button.Pressed, "#ok")
+    def _ok(self) -> None:
+        self._do_submit()
+
+    def action_submit(self) -> None:
+        self._do_submit()
+
+    def _do_submit(self) -> None:
+        try:
+            agents = int(self.query_one("#workspace-agents", Input).value or "0")
+            terminals = int(self.query_one("#workspace-terminals", Input).value or "0")
+        except ValueError:
+            self.app.notify("Invalid number", severity="error")
+            return
+        if agents < 0 or terminals < 0:
+            self.app.notify("Counts must be non-negative.", severity="error")
+            return
+        if agents == 0 and terminals == 0:
+            # Reject up front rather than letting the launcher silently
+            # backfill a single bash — the user clearly meant to type
+            # something else.
+            self.app.notify(
+                "At least one pane required (agents + terminals > 0).",
+                severity="error",
+            )
+            return
+        state.set_last_workspace_options(agents=agents, terminals=terminals)
+        self.dismiss(WorkspaceOptions(agents=agents, terminals=terminals))
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss("back" if self.allow_back else None)
+
+
 class FolderModal(ModalScreen[str | None]):
     """Quick prompt: which folder on the compute node? Empty string = home."""
 
@@ -888,6 +1015,8 @@ class JobsPanel(Container):
         # with the user's prior choices intact. Cleared after submission /
         # outright cancel.
         self._pending_agent_opts: AgentOptions | None = None
+        # Same idea for the workspace flow's options step.
+        self._pending_workspace_opts: WorkspaceOptions | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -1247,6 +1376,30 @@ class JobsPanel(Container):
                 lambda result: self._after_agent_options(folder, result),
             )
             return
+        # Workspace: 3-step flow folder → workspace options → resources/attach,
+        # but probe first when a running alloc is highlighted — if a tmux
+        # session already exists on it, the layout knobs would be silently
+        # ignored anyway (the setup-script ``has-session`` guard short-circuits
+        # the build) so asking for them is just friction. The probe runs in a
+        # worker thread to keep the UI responsive; on completion it either
+        # attaches directly or opens the options modal.
+        if kind == "workspace":
+            alloc = self._alloc_from_selected_row()
+            if alloc is not None:
+                self._notify_action(f"probing {alloc.node} for existing workspace…")
+                self._probe_workspace_then(alloc, folder)
+                return
+            # No running row — going to spawn a fresh alloc, so the layout
+            # build will always happen. Open the modal directly.
+            self.app.push_screen(
+                WorkspaceOptionsModal(
+                    cfg,
+                    allow_back=True,
+                    prefill=self._pending_workspace_opts,
+                ),
+                lambda result: self._after_workspace_options(folder, result),
+            )
+            return
         # Block early when the highlighted row exists but isn't connectable
         # (pending) — silently falling through to the New Instance modal made
         # it look like the action was ignored.
@@ -1270,8 +1423,6 @@ class JobsPanel(Container):
         # among current jobs.
         if kind == "editor":
             default_name = cfg.editor_job_name
-        elif kind == "workspace":
-            default_name = self._suggest_workspace_name(cfg)
         else:
             default_name = self._suggest_dev_name(cfg)
         self.app.push_screen(
@@ -1364,6 +1515,110 @@ class JobsPanel(Container):
         self._pending_agent_opts = None
         self._submit_then_attach("agent", merged, folder)
 
+    # ----- workspace flow (folder → workspace options → resources → submit/attach)
+
+    @work(thread=True, exclusive=True, group="action")
+    def _probe_workspace_then(
+        self, alloc: alloc_mod.Allocation, folder: str
+    ) -> None:
+        """Worker: check for an existing workspace session, then dispatch.
+
+        Session exists ⇒ go straight to attach (the modal would be ignored
+        anyway). Session missing ⇒ open the options modal so the user can
+        pick the layout that will actually be built.
+        """
+        exists = launch.workspace_session_exists(alloc)
+        if exists:
+            self.app.call_from_thread(
+                self._notify_action,
+                f"reattaching to existing workspace on {alloc.node} "
+                f"(pane counts ignored — they only apply on first build)",
+            )
+            self.app.call_from_thread(self._attach_to, "workspace", alloc, folder)
+            return
+        cfg = load()
+        self.app.call_from_thread(
+            self.app.push_screen,
+            WorkspaceOptionsModal(
+                cfg, allow_back=True, prefill=self._pending_workspace_opts
+            ),
+            lambda result: self._after_workspace_options(folder, result),
+        )
+
+    def _after_workspace_options(
+        self, folder: str, result: "WorkspaceOptions | str | None"
+    ) -> None:
+        """Step 2 callback: with pane counts in hand, either attach to the
+        highlighted alloc or fall through to the resources modal."""
+        if result is None:
+            self._pending_workspace_opts = None
+            return
+        if result == "back":
+            self._pick_folder_then("workspace")
+            return
+        assert isinstance(result, WorkspaceOptions)
+        # Cache so step-back from the resources modal re-prefills.
+        self._pending_workspace_opts = result
+        # Block early when the highlighted row exists but isn't connectable.
+        row = self._selected_row()
+        if row is not None and row.state not in RUNNING_STATES:
+            self.app.notify(
+                f"Job {row.jobid} is {row.state.lower()} — can't attach yet.",
+                severity="warning",
+                timeout=4,
+            )
+            return
+        alloc = self._alloc_from_selected_row()
+        if alloc is not None:
+            # Reattach path: pane counts only apply when the tmux session is
+            # being built; if it already exists they're ignored by tmux.
+            self._pending_workspace_opts = None
+            self._attach_to(
+                "workspace",
+                alloc,
+                folder,
+                workspace_agents=result.agents,
+                workspace_terminals=result.terminals,
+            )
+            return
+        cfg = load()
+        self.app.push_screen(
+            NewInstanceModal(
+                cfg,
+                allow_back=True,
+                default_name=self._suggest_workspace_name(cfg),
+            ),
+            lambda r: self._after_workspace_resources(folder, result, r),
+        )
+
+    def _after_workspace_resources(
+        self,
+        folder: str,
+        opts: "WorkspaceOptions",
+        result: "AllocParams | str | None",
+    ) -> None:
+        """Step 3 callback: merge workspace opts into AllocParams and submit,
+        or step back to the workspace-options modal with prefill intact."""
+        if result is None:
+            self._pending_workspace_opts = None
+            return
+        if result == "back":
+            cfg = load()
+            self.app.push_screen(
+                WorkspaceOptionsModal(cfg, allow_back=True, prefill=opts),
+                lambda r: self._after_workspace_options(folder, r),
+            )
+            return
+        assert isinstance(result, AllocParams)
+        from dataclasses import replace as _replace
+        merged = _replace(
+            result,
+            workspace_agents=opts.agents,
+            workspace_terminals=opts.terminals,
+        )
+        self._pending_workspace_opts = None
+        self._submit_then_attach("workspace", merged, folder)
+
     def _alloc_from_selected_row(self) -> alloc_mod.Allocation | None:
         """Promote the highlighted row to an Allocation if it's running on a node."""
         row = self._selected_row()
@@ -1383,10 +1638,13 @@ class JobsPanel(Container):
         alloc: alloc_mod.Allocation,
         folder_arg: str = "",
         params: AllocParams | None = None,
+        *,
+        workspace_agents: int = 0,
+        workspace_terminals: int = 0,
     ) -> None:
         # The agent flow launches detached straight from the worker thread
         # (no UI suspend, no terminal handover) so it never reaches here —
-        # only shell / editor do.
+        # only shell / editor / workspace do.
         cfg = load()
         folder_abs = launch.resolve_folder(folder_arg, cfg)
         if kind == "editor":
@@ -1394,11 +1652,30 @@ class JobsPanel(Container):
             launch.launch_editor(alloc, folder_abs, cfg)
             return
         if kind == "workspace":
+            # Pull from ``params`` (post-resources submit path) first, then
+            # the explicit kwargs (attach-to-existing-alloc path). 0 means
+            # "fall back to cfg defaults" — handled inside launch_workspace.
+            agents = (
+                params.workspace_agents
+                if params is not None and params.workspace_agents > 0
+                else workspace_agents
+            )
+            terminals = (
+                params.workspace_terminals
+                if params is not None and params.workspace_terminals > 0
+                else workspace_terminals
+            )
             self._notify_action(
                 f"opening workspace on {alloc.node} ({folder_abs})… detach with Ctrl-b d"
             )
             with self.app.suspend():
-                launch.launch_workspace(alloc, folder_abs, cfg)
+                launch.launch_workspace(
+                    alloc,
+                    folder_abs,
+                    cfg,
+                    agents=agents or None,
+                    terminals=terminals or None,
+                )
             self._notify_action(f"returned from {alloc.node} (workspace still running)")
             self.refresh_jobs()
             return
@@ -1639,7 +1916,7 @@ FooterKey > .footer-key--key { color: ansi_cyan; text-style: bold; }
    dashboard underneath shows through at full brightness around the modal
    box. The modal-box itself is opaque (default bg + cyan border) so its
    content stays crisp; only the area outside the box is "see-through". */
-ConfirmModal, NewInstanceModal, AgentOptionsModal, FolderModal, SetupModal {
+ConfirmModal, NewInstanceModal, AgentOptionsModal, WorkspaceOptionsModal, FolderModal, SetupModal {
     align: center middle;
     background: transparent;
 }

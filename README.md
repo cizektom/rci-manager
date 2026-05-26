@@ -82,7 +82,7 @@ fall back to `--help`.
 | `rci shell  [DIR] [--gpu]`           | interactive bash on the compute node               |
 | `rci editor [DIR] [--gpu]`           | VS Code Remote-SSH (WSL → Windows `code.cmd`)      |
 | `rci agent  [DIR] [--gpu] [...]`     | spawn `agent-N` + run `claude remote-control`      |
-| `rci workspace [DIR] [--gpu]`        | tmux workspace (2 claude panes + bash)             |
+| `rci workspace [DIR] [--gpu] [-a N] [-T M]` | tmux workspace (N claude panes + M bash panes) |
 | `rci alloc  [--gpu]`                 | prints `<node> <jobid>` — scripting-friendly       |
 | `rci port LOCAL[:REMOTE]`            | local → compute-node port forward (Ctrl-C to stop) |
 | `rci tui`                            | Textual TUI dashboard                              |
@@ -127,9 +127,10 @@ one is running (same alloc pool as `rci shell`).
 rci workspace                  # CPU or strongest existing alloc, $home
 rci workspace sam2rl           # under <home>/sam2rl
 rci workspace sam2rl --gpu     # require/spawn a GPU alloc
+rci workspace -a 3 -T 2        # 3 claude panes on top, 2 bash on bottom
 ```
 
-Default layout:
+Default layout (2 agents + 1 terminal):
 
 ```
 +----------+----------+    panes 0 & 2: claude (auto-launched)
@@ -145,6 +146,14 @@ Both claude panes start running on session creation — no Enter required.
 Pane indices are creation-order (top-left=0, bottom=1, top-right=2). Use
 Ctrl-b arrow keys to move between them — the numbers only matter if you're
 scripting tmux.
+
+**Pane counts.** `--agents`/`-a` and `--terminals`/`-T` (or the TUI's
+Workspace options popup) control how many claude panes fill the top row
+and how many bash panes fill the bottom row. Defaults
+(`workspace_agents` / `workspace_terminals` in `~/.config/rci-cli/config.toml`)
+ship at 2 + 1; the TUI also remembers your last choice across sessions.
+Pane counts only matter the first time the session is built — reattaches
+inherit the existing layout.
 
 **Disconnect-safe.** The tmux daemon lives in a long-lived
 `srun --jobid --overlap` step that holds the job's cgroup open. Detach with
@@ -226,7 +235,7 @@ Bare `rci` opens the dashboard:
 | `c` | **Connect** — shell into the highlighted job's compute node (prompts for folder first) |
 | `e` | **Editor** — VS Code Remote-SSH against the highlighted job (prompts for folder first) |
 | `a` | **Agent** — spawn a new `agent-N` and run `claude remote-control` (folder → agent options → resources) |
-| `w` | **Workspace** — open (or reattach to) a tmux session on the highlighted job (2 claude panes on top, bash on bottom). Detach with `Ctrl-b d` |
+| `w` | **Workspace** — open (or reattach to) a tmux session on the highlighted job. Asks for pane counts (claude on top, bash on bottom; defaults 2 + 1, remembered across sessions). Detach with `Ctrl-b d` |
 | `d` | **Delete** — cancel the highlighted job (confirmation modal, default ✕ No) |
 | `r` | force-refresh the table (also auto-refreshes every 5s) |
 | `↑/↓` or `j`/`k` | navigate rows; the detail line updates live |

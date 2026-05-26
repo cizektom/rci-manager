@@ -86,3 +86,24 @@ def set_last_instance_params(
         "walltime": walltime,
     }
     _save(data)
+
+
+_WORKSPACE_KEYS = ("agents", "terminals")
+
+
+def get_last_workspace_options() -> dict | None:
+    """Return the last submitted Workspace-options values, or ``None`` if unsaved.
+
+    Caller validates (the modal does — falling back to ``Config`` defaults
+    for missing/out-of-range entries).
+    """
+    data = _load().get("last_workspace_options")
+    if not isinstance(data, dict):
+        return None
+    return {k: data.get(k) for k in _WORKSPACE_KEYS}
+
+
+def set_last_workspace_options(*, agents: int, terminals: int) -> None:
+    data = _load()
+    data["last_workspace_options"] = {"agents": agents, "terminals": terminals}
+    _save(data)

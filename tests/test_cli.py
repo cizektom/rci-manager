@@ -280,7 +280,7 @@ def test_alloc_consuming_commands_wire_through(monkeypatch, cmd, launch_attr) ->
     resolved folder path."""
     captured: dict = {}
 
-    def fake_launch(a, folder, cfg):
+    def fake_launch(a, folder, cfg, **kwargs):
         captured.update({"node": a.node, "jobid": a.jobid, "folder": folder})
         return 0
 

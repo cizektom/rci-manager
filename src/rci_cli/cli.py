@@ -298,12 +298,25 @@ def shell(
 def workspace(
     folder: Annotated[str, typer.Argument()] = "",
     gpu: Annotated[bool, typer.Option("--gpu", help="require a GPU allocation")] = False,
+    agents: Annotated[
+        int,
+        typer.Option("-a", "--agents", help="claude panes in the top row"),
+    ] = -1,
+    terminals: Annotated[
+        int,
+        typer.Option("-T", "--terminals", help="bash panes in the bottom row"),
+    ] = -1,
 ) -> None:
-    """Open a tmux workspace on the compute node (2 claude panes + bash).
+    """Open a tmux workspace on the compute node (claude panes + bash).
 
     Reuses an existing rci-managed allocation if one is running, otherwise
     spawns a ``workspace-N``. Subsequent invocations against the same job
     reattach to the live session — disconnect-safe.
+
+    Pane counts default to ``workspace_agents`` / ``workspace_terminals``
+    in ``~/.config/rci-cli/config.toml`` (2 + 1). They only matter the
+    first time the session is built — reattaches inherit the existing
+    layout.
     """
     cfg = _cfg()
     a = _require_alloc(
@@ -311,7 +324,15 @@ def workspace(
         require_gpu=gpu,
         spawn_name=slurm.next_indexed_name(cfg, cfg.workspace_job_name),
     )
-    sys.exit(launch.launch_workspace(a, launch.resolve_folder(folder, cfg), cfg))
+    sys.exit(
+        launch.launch_workspace(
+            a,
+            launch.resolve_folder(folder, cfg),
+            cfg,
+            agents=agents if agents >= 0 else None,
+            terminals=terminals if terminals >= 0 else None,
+        )
+    )
 
 
 @app.command()

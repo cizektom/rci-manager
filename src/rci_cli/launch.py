@@ -170,6 +170,41 @@ def workspace_log_path(jobid: str) -> str:
     return f"{WORKSPACE_LOG_DIR}/{shlex.quote(jobid)}.log"
 
 
+def workspace_session_exists(alloc: Allocation) -> bool:
+    """Return True if a workspace tmux session is already running on ``alloc``.
+
+    Lets callers distinguish "reattach to existing layout" from "build
+    fresh" — the layout knobs (``agents`` / ``terminals``) only matter
+    in the build case, so the TUI can skip the options modal when this
+    returns True.
+
+    Failures (network, ssh, tmux missing, …) all collapse to False:
+    the worst case is then "show the options modal when we didn't need
+    to", which is no worse than the pre-probe behavior. The
+    ``has-session`` guard inside the setup script still keeps the
+    layout build idempotent — so even when the probe is wrong we don't
+    rebuild over a running session.
+    """
+    import subprocess
+    from . import ssh as _ssh
+
+    sock = f"rci-ws-{alloc.jobid}"
+    try:
+        _ssh.capture(
+            alloc.node,
+            f"tmux -L {shlex.quote(sock)} has-session -t main",
+            check=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        # ``has-session`` exits 1 when the session is absent — the
+        # expected "no session" signal. Any other CalledProcessError
+        # (e.g. tmux not on PATH) lands here too, treated the same way.
+        return False
+    except Exception:  # noqa: BLE001 — ssh / DNS / timeout / etc.
+        return False
+
+
 def _pane_cmd(folder: str, *, command: str = "") -> str:
     """Shell command for a tmux pane: cd + venv + PATH + optional payload + bash.
 
@@ -187,10 +222,20 @@ def _pane_cmd(folder: str, *, command: str = "") -> str:
     return f"bash -c {shlex.quote(inner)}"
 
 
-def launch_workspace(alloc: Allocation, folder: str, cfg: Config) -> int:
+def launch_workspace(
+    alloc: Allocation,
+    folder: str,
+    cfg: Config,
+    *,
+    agents: int | None = None,
+    terminals: int | None = None,
+) -> int:
     """Open (or reattach to) a tmux workspace on the compute node.
 
-    Layout (3 panes):
+    Layout: ``agents`` claude panes in the top row, ``terminals`` bash
+    panes in the bottom row. ``None`` for either falls back to
+    ``cfg.workspace_agents`` / ``cfg.workspace_terminals``. Default 2+1
+    renders as:
 
         +----------+----------+
         | claude 0 | claude 2 |   top row (70%): two claude shells,
@@ -198,10 +243,10 @@ def launch_workspace(alloc: Allocation, folder: str, cfg: Config) -> int:
         |       bash 1        |   bottom (30%): bash for ad-hoc commands
         +---------------------+
 
-    Pane indices are creation-order (0 first, then 1 from the vertical
-    split, then 2 from the horizontal split of pane 0) — visually that
-    reads top-left=0, top-right=2, bottom=1. Use Ctrl-b arrow keys to
-    move between them.
+    Pane indices are creation-order. With the default 2+1 layout the
+    final positional indices read top-left=0, top-right=2, bottom=1 —
+    visual position no longer follows creation order once horizontal
+    splits land. Use Ctrl-b arrow keys to move between panes.
 
     Persistence model. tmux's daemon must live inside the job's cgroup
     (otherwise its panes see every GPU on the node — same trap as
@@ -214,11 +259,23 @@ def launch_workspace(alloc: Allocation, folder: str, cfg: Config) -> int:
     Per-job socket (``rci-ws-<jobid>``) so workspaces on different
     allocations don't share a daemon (and a wrong cgroup).
 
-    Idempotent: subsequent calls reattach to the existing session, so
-    ``w`` after a disconnect is instant. Closing every pane exits the
-    session, which exits the holder loop, which ends the slurm step —
-    next ``w`` builds fresh.
+    Idempotent: subsequent calls reattach to the existing session — the
+    ``agents`` / ``terminals`` knobs only apply when the session is being
+    built. Closing every pane exits the session, which exits the holder
+    loop, which ends the slurm step — next ``w`` builds fresh.
     """
+    if agents is None:
+        agents = cfg.workspace_agents
+    if terminals is None:
+        terminals = cfg.workspace_terminals
+    agents = max(0, int(agents))
+    terminals = max(0, int(terminals))
+    # The session needs at least one pane to hold the cgroup open. If the
+    # caller asked for nothing, fall back to a single bash so the user
+    # isn't staring at an empty tmux.
+    if agents == 0 and terminals == 0:
+        terminals = 1
+
     sock = f"rci-ws-{alloc.jobid}"
     sess = "main"
     sock_q = shlex.quote(sock)
@@ -228,29 +285,84 @@ def launch_workspace(alloc: Allocation, folder: str, cfg: Config) -> int:
     claude_pane = shlex.quote(_pane_cmd(folder, command="claude"))
     bash_pane = shlex.quote(_pane_cmd(folder))
 
-    # Inner script runs inside the long-lived srun step. Builds the 3-pane
-    # layout, then idles in the has-session poll loop — the loop is the
-    # cgroup holder. When the user kills the last pane the loop returns
-    # false and srun exits cleanly.
+    # Inner script runs inside the long-lived srun step. Builds the panes
+    # then idles in the has-session poll loop — the loop is the cgroup
+    # holder. When the user kills the last pane the loop returns false
+    # and srun exits cleanly.
     #
-    # Layout sequence — each pane is born with its right initial command,
-    # so we don't rely on post-hoc ``send-keys`` to target pane indices
-    # (tmux renumbers panes by visual position after every split, so
-    # creation-order ≠ final-index — easy to send keys to the wrong pane):
+    # Layout sequence (general case for N agents + M terminals):
     #
-    #   1) new-session  with claude → pane (whole window, runs claude)
-    #   2) split -v -p 30 with bash → bash row below (30% tall)
-    #   3) split -h -p 50 -t .0 with claude → second claude in top-right
+    #   1) new-session with first pane (claude if agents>0 else bash) —
+    #      creation-order pane 0.
+    #   2) if both rows are populated: split -v -p 30 with bash creates the
+    #      bottom row (pane 1, 30% tall). Skipped when only one row exists.
+    #   3) for each additional agent: split -h -t {.0|.bottom_top} with claude
+    #      to add another column to the top row.
+    #   4) for each additional terminal: split -h -t {.0|.bottom_first} with
+    #      bash to add another column to the bottom row.
+    #   5) select-layout -E on each multi-pane row distributes width evenly
+    #      among siblings without disturbing the other row.
     #
-    # After step 3 the final positional indices are: 0=top-left,
-    # 1=top-right, 2=bottom. select-pane -t .0 focuses the left claude.
-    inner_lines = [
-        f"tmux -L {sock_q} new-session -d -s {sess_q} -c {folder_q} {claude_pane}",
-        f"tmux -L {sock_q} split-window -v -p 30 -t {sess_q} -c {folder_q} {bash_pane}",
-        f"tmux -L {sock_q} split-window -h -p 50 -t {sess_q}.0 -c {folder_q} {claude_pane}",
-        f"tmux -L {sock_q} select-pane -t {sess_q}.0",
-        f"while tmux -L {sock_q} has-session -t {sess_q} 2>/dev/null; do sleep 30; done",
-    ]
+    # Panes are born with their initial command — no post-hoc ``send-keys``,
+    # since tmux renumbers panes by visual position after splits and a
+    # literal ``-t .N`` would otherwise hit the wrong cell.
+    inner_lines: list[str] = []
+    first_pane = claude_pane if agents > 0 else bash_pane
+    inner_lines.append(
+        f"tmux -L {sock_q} new-session -d -s {sess_q} -c {folder_q} {first_pane}"
+    )
+
+    if agents > 0 and terminals > 0:
+        # Vertical split for the bottom (terminals) row. ``-p 30`` matches
+        # the historic 70/30 top:bottom ratio; tunable in a follow-up if
+        # we ever want it config-driven.
+        inner_lines.append(
+            f"tmux -L {sock_q} split-window -v -p 30 -t {sess_q} -c {folder_q} {bash_pane}"
+        )
+        bottom_first = "1"  # creation-order index of the first terminal
+    else:
+        # Single-row workspace: the first (and only) row starts at pane 0;
+        # no "bottom row" exists in this layout.
+        bottom_first = None
+
+    # First pane is at .0 regardless of agents vs terminals. Extra agents
+    # split that pane; extra terminals split bottom_first when present,
+    # else .0 (single-row terminals-only layout).
+    top_first = "0"
+
+    # Add remaining agents to the top row.
+    for _ in range(max(0, agents - 1)):
+        inner_lines.append(
+            f"tmux -L {sock_q} split-window -h -t {sess_q}.{top_first} "
+            f"-c {folder_q} {claude_pane}"
+        )
+    if agents >= 2:
+        # Even the agent row in one shot — ``select-layout -E`` spreads
+        # the target pane and its siblings under the same parent split,
+        # so the other row's widths stay untouched.
+        inner_lines.append(
+            f"tmux -L {sock_q} select-layout -E -t {sess_q}.{top_first}"
+        )
+
+    # Add remaining terminals to the bottom row (or the only row when
+    # agents=0).
+    terminal_anchor = bottom_first if bottom_first is not None else top_first
+    if terminals >= 1:
+        for _ in range(max(0, terminals - 1)):
+            inner_lines.append(
+                f"tmux -L {sock_q} split-window -h -t {sess_q}.{terminal_anchor} "
+                f"-c {folder_q} {bash_pane}"
+            )
+        if terminals >= 2:
+            inner_lines.append(
+                f"tmux -L {sock_q} select-layout -E -t {sess_q}.{terminal_anchor}"
+            )
+
+    # Focus pane 0 — first agent if present, else first terminal.
+    inner_lines.append(f"tmux -L {sock_q} select-pane -t {sess_q}.{top_first}")
+    inner_lines.append(
+        f"while tmux -L {sock_q} has-session -t {sess_q} 2>/dev/null; do sleep 30; done"
+    )
     inner_q = shlex.quote(" && ".join(inner_lines))
 
     log_path = workspace_log_path(alloc.jobid)
