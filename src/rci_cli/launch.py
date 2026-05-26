@@ -286,6 +286,16 @@ def launch_workspace(
     inner_lines.append(
         f"tmux -L {sock_q} new-session -d -s {sess_q} -c {folder_q} {first_pane}"
     )
+    # Force ``destroy-unattached off`` on our session: workspace lifetime is
+    # governed by the holder srun's ``while has-session`` loop, not by
+    # client attachment. If the user has ``destroy-unattached on`` in their
+    # ~/.tmux.conf (or one slips in from /etc/tmux.conf), a stray detach
+    # — e.g. a sequence emitted on mouse-selection release by some
+    # terminals — would otherwise destroy the session, exit-empty would
+    # then take the server down, and all panes vanish at once.
+    inner_lines.append(
+        f"tmux -L {sock_q} set-option -t {sess_q} destroy-unattached off"
+    )
 
     if agents > 0 and terminals > 0:
         # Vertical split for the bottom (terminals) row. ``-p 30`` matches

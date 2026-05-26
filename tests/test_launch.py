@@ -235,6 +235,20 @@ def test_launch_workspace_setup_and_attach_phases(monkeypatch, cfg: Config) -> N
     assert attach["stdin"] is None
 
 
+def test_launch_workspace_disables_destroy_unattached(monkeypatch, cfg: Config) -> None:
+    """Our session must override ``destroy-unattached`` to off: workspace
+    lifetime is the holder srun's job, not the client's. A stray detach
+    sequence (e.g. emitted by some terminals on mouse-selection release)
+    would otherwise destroy the session, exit-empty would take the
+    server down, and every pane would vanish at once."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"), "/home/cizekto2/sam2rl", cfg
+    )
+    setup_script = calls[0]["stdin"]
+    assert "set-option -t main destroy-unattached off" in setup_script
+
+
 def test_launch_workspace_holder_keeps_cgroup_alive(monkeypatch, cfg: Config) -> None:
     """The tmux daemon must be forked inside ``srun --jobid --overlap`` and
     the step must be held open while the session exists — otherwise slurm
