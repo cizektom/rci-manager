@@ -319,48 +319,6 @@ def test_workspace_log_path_namespaces_per_jobid() -> None:
     assert launch.workspace_log_path("5555") == "$HOME/.rci/workspace-logs/5555.log"
 
 
-def test_workspace_session_exists_true_when_capture_succeeds(monkeypatch) -> None:
-    """``has-session`` exits 0 ⇒ ssh.capture returns normally ⇒ probe says yes.
-
-    Captures the exact command sent so we can assert the per-job socket
-    name is wired into the probe (mismatched socket ⇒ probe checks the
-    wrong daemon ⇒ always misses)."""
-    seen: dict = {}
-
-    def fake_capture(host, cmd, **kwargs):
-        seen["host"] = host
-        seen["cmd"] = cmd
-        return ""
-
-    monkeypatch.setattr(ssh, "capture", fake_capture)
-    assert launch.workspace_session_exists(Allocation(node="g05", jobid="5555")) is True
-    assert seen["host"] == "g05"
-    assert "tmux -L rci-ws-5555 has-session -t main" in seen["cmd"]
-
-
-def test_workspace_session_exists_false_when_capture_raises(monkeypatch) -> None:
-    """``has-session`` exits 1 ⇒ subprocess raises ⇒ probe says no session."""
-    import subprocess
-
-    def fake_capture(host, cmd, **kwargs):
-        raise subprocess.CalledProcessError(1, ["ssh", host, cmd])
-
-    monkeypatch.setattr(ssh, "capture", fake_capture)
-    assert launch.workspace_session_exists(Allocation(node="g05", jobid="5555")) is False
-
-
-def test_workspace_session_exists_swallows_unexpected_errors(monkeypatch) -> None:
-    """Probe must collapse network/timeout/etc. to False rather than crashing
-    the caller — worst case is "show the modal we didn't need to", and the
-    setup script's own ``has-session`` guard still keeps things idempotent."""
-
-    def fake_capture(host, cmd, **kwargs):
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(ssh, "capture", fake_capture)
-    assert launch.workspace_session_exists(Allocation(node="g05", jobid="5555")) is False
-
-
 def test_launch_workspace_respects_explicit_pane_counts(
     monkeypatch, cfg: Config
 ) -> None:

@@ -1376,21 +1376,14 @@ class JobsPanel(Container):
                 lambda result: self._after_agent_options(folder, result),
             )
             return
-        # Workspace: 3-step flow folder → workspace options → resources/attach,
-        # but probe first when a running alloc is highlighted — if a tmux
-        # session already exists on it, the layout knobs would be silently
-        # ignored anyway (the setup-script ``has-session`` guard short-circuits
-        # the build) so asking for them is just friction. The probe runs in a
-        # worker thread to keep the UI responsive; on completion it either
-        # attaches directly or opens the options modal.
+        # Workspace: 3-step flow folder → workspace options → resources/attach.
+        # The options modal opens unconditionally — checking whether a session
+        # already exists would need its own ssh hop, which on cold connections
+        # adds 1-3s of dead air before the modal appears (much worse than the
+        # extra Enter on reattach). The setup-script ``has-session`` guard
+        # still keeps things idempotent: pane counts are silently ignored when
+        # reattaching, never destructive.
         if kind == "workspace":
-            alloc = self._alloc_from_selected_row()
-            if alloc is not None:
-                self._notify_action(f"probing {alloc.node} for existing workspace…")
-                self._probe_workspace_then(alloc, folder)
-                return
-            # No running row — going to spawn a fresh alloc, so the layout
-            # build will always happen. Open the modal directly.
             self.app.push_screen(
                 WorkspaceOptionsModal(
                     cfg,
@@ -1516,34 +1509,6 @@ class JobsPanel(Container):
         self._submit_then_attach("agent", merged, folder)
 
     # ----- workspace flow (folder → workspace options → resources → submit/attach)
-
-    @work(thread=True, exclusive=True, group="action")
-    def _probe_workspace_then(
-        self, alloc: alloc_mod.Allocation, folder: str
-    ) -> None:
-        """Worker: check for an existing workspace session, then dispatch.
-
-        Session exists ⇒ go straight to attach (the modal would be ignored
-        anyway). Session missing ⇒ open the options modal so the user can
-        pick the layout that will actually be built.
-        """
-        exists = launch.workspace_session_exists(alloc)
-        if exists:
-            self.app.call_from_thread(
-                self._notify_action,
-                f"reattaching to existing workspace on {alloc.node} "
-                f"(pane counts ignored — they only apply on first build)",
-            )
-            self.app.call_from_thread(self._attach_to, "workspace", alloc, folder)
-            return
-        cfg = load()
-        self.app.call_from_thread(
-            self.app.push_screen,
-            WorkspaceOptionsModal(
-                cfg, allow_back=True, prefill=self._pending_workspace_opts
-            ),
-            lambda result: self._after_workspace_options(folder, result),
-        )
 
     def _after_workspace_options(
         self, folder: str, result: "WorkspaceOptions | str | None"

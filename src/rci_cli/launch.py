@@ -170,41 +170,6 @@ def workspace_log_path(jobid: str) -> str:
     return f"{WORKSPACE_LOG_DIR}/{shlex.quote(jobid)}.log"
 
 
-def workspace_session_exists(alloc: Allocation) -> bool:
-    """Return True if a workspace tmux session is already running on ``alloc``.
-
-    Lets callers distinguish "reattach to existing layout" from "build
-    fresh" — the layout knobs (``agents`` / ``terminals``) only matter
-    in the build case, so the TUI can skip the options modal when this
-    returns True.
-
-    Failures (network, ssh, tmux missing, …) all collapse to False:
-    the worst case is then "show the options modal when we didn't need
-    to", which is no worse than the pre-probe behavior. The
-    ``has-session`` guard inside the setup script still keeps the
-    layout build idempotent — so even when the probe is wrong we don't
-    rebuild over a running session.
-    """
-    import subprocess
-    from . import ssh as _ssh
-
-    sock = f"rci-ws-{alloc.jobid}"
-    try:
-        _ssh.capture(
-            alloc.node,
-            f"tmux -L {shlex.quote(sock)} has-session -t main",
-            check=True,
-        )
-        return True
-    except subprocess.CalledProcessError:
-        # ``has-session`` exits 1 when the session is absent — the
-        # expected "no session" signal. Any other CalledProcessError
-        # (e.g. tmux not on PATH) lands here too, treated the same way.
-        return False
-    except Exception:  # noqa: BLE001 — ssh / DNS / timeout / etc.
-        return False
-
-
 def _pane_cmd(folder: str, *, command: str = "") -> str:
     """Shell command for a tmux pane: cd + venv + PATH + optional payload + bash.
 
