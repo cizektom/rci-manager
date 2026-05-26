@@ -247,6 +247,9 @@ def test_launch_workspace_disables_destroy_unattached(monkeypatch, cfg: Config) 
     )
     setup_script = calls[0]["stdin"]
     assert "set-option -t main destroy-unattached off" in setup_script
+    # We start the server with ``-f /dev/null`` so the user's prefix binding
+    # from ~/.tmux.conf is lost; restore Ctrl-Space explicitly.
+    assert "set-option -g prefix C-Space" in setup_script
 
 
 def test_launch_workspace_holder_keeps_cgroup_alive(monkeypatch, cfg: Config) -> None:

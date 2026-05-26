@@ -308,6 +308,12 @@ def launch_workspace(
     inner_lines.append(
         f"tmux -L {sock_q} set-option -t {sess_q} destroy-unattached off"
     )
+    # Restore the user's expected prefix (Ctrl-Space) since we started
+    # tmux with ``-f /dev/null`` and lost their ~/.tmux.conf binding.
+    # Set globally so any future session on this socket inherits it.
+    inner_lines.append(
+        f"tmux -L {sock_q} set-option -g prefix C-Space"
+    )
 
     if agents > 0 and terminals > 0:
         # Vertical split for the bottom (terminals) row. ``-p 30`` matches
