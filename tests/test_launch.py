@@ -250,13 +250,12 @@ def test_launch_workspace_disables_destroy_unattached(monkeypatch, cfg: Config) 
     # We start the server with ``-f /dev/null`` so the user's prefix binding
     # from ~/.tmux.conf is lost; restore Ctrl-Space explicitly.
     assert "set-option -g prefix C-Space" in setup_script
-    # Mouse scrolling: enable ``mouse on`` for wheel scrollback, but unbind
-    # the drag handlers — the default ``copy-selection-and-cancel`` path
-    # crashes the whole session on this cluster's tmux build.
+    # Mouse: enable for wheel scrollback + drag/dblclick selection, but
+    # disable ``set-clipboard`` so copy-selection-and-cancel stays in
+    # tmux's internal paste buffer and doesn't emit OSC 52 (which
+    # crashes the session on this cluster's tmux).
     assert "set-option -g mouse on" in setup_script
-    assert "unbind-key -T root MouseDrag1Pane" in setup_script
-    assert "unbind-key -T copy-mode MouseDragEnd1Pane" in setup_script
-    assert "unbind-key -T copy-mode-vi MouseDragEnd1Pane" in setup_script
+    assert "set-option -s set-clipboard off" in setup_script
 
 
 def test_launch_workspace_holder_keeps_cgroup_alive(monkeypatch, cfg: Config) -> None:

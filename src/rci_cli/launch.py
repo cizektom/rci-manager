@@ -314,26 +314,20 @@ def launch_workspace(
     inner_lines.append(
         f"tmux -L {sock_q} set-option -g prefix C-Space"
     )
-    # Mouse scrolling: enable ``mouse on`` for wheel-driven scrollback.
-    # Bug observed on this cluster's tmux: the default
-    # ``MouseDragEnd1Pane → copy-selection-and-cancel`` path tears the
-    # whole session down on selection release (reproducible even with
-    # ``tmux -f /dev/null new -s test; tmux set -g mouse on``). Unbind
-    # the drag entry points so mouse-drag never enters copy-mode in the
-    # first place — wheel bindings (``WheelUpPane`` / ``WheelDownPane``)
-    # stay live, scrolling still works. Drag-select then becomes a
-    # no-op in tmux; Shift+drag still gives native terminal selection.
+    # Mouse: ``mouse on`` for wheel scrollback + native drag/double-click
+    # selection. The death triggered by ``copy-selection-and-cancel`` on
+    # this cluster's tmux is attributable to the default
+    # ``set-clipboard external`` — every copy emits an OSC 52 escape
+    # sequence (``\e]52;c;<base64>\a``) to set the system clipboard, and
+    # the terminal/tmux interaction on that sequence detonates the
+    # session here. Turn ``set-clipboard`` off so copy stays internal
+    # (tmux's paste-buffer only); paste with ``prefix ]`` as usual. With
+    # the clipboard hop disabled, drag-select and double-click are safe.
     inner_lines.append(
         f"tmux -L {sock_q} set-option -g mouse on"
     )
     inner_lines.append(
-        f"tmux -L {sock_q} unbind-key -T root MouseDrag1Pane"
-    )
-    inner_lines.append(
-        f"tmux -L {sock_q} unbind-key -T copy-mode MouseDragEnd1Pane"
-    )
-    inner_lines.append(
-        f"tmux -L {sock_q} unbind-key -T copy-mode-vi MouseDragEnd1Pane"
+        f"tmux -L {sock_q} set-option -s set-clipboard off"
     )
 
     if agents > 0 and terminals > 0:
