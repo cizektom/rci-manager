@@ -88,7 +88,7 @@ def set_last_instance_params(
     _save(data)
 
 
-_WORKSPACE_KEYS = ("agents", "terminals")
+_WORKSPACE_KEYS = ("agents", "terminals", "agent_subdirs", "terminal_subdirs")
 
 
 def get_last_workspace_options() -> dict | None:
@@ -103,7 +103,18 @@ def get_last_workspace_options() -> dict | None:
     return {k: data.get(k) for k in _WORKSPACE_KEYS}
 
 
-def set_last_workspace_options(*, agents: int, terminals: int) -> None:
+def set_last_workspace_options(
+    *,
+    agents: int,
+    terminals: int,
+    agent_subdirs: list[str] | tuple[str, ...] = (),
+    terminal_subdirs: list[str] | tuple[str, ...] = (),
+) -> None:
     data = _load()
-    data["last_workspace_options"] = {"agents": agents, "terminals": terminals}
+    data["last_workspace_options"] = {
+        "agents": agents,
+        "terminals": terminals,
+        "agent_subdirs": list(agent_subdirs),
+        "terminal_subdirs": list(terminal_subdirs),
+    }
     _save(data)

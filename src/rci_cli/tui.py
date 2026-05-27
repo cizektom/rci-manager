@@ -184,6 +184,10 @@ class AllocParams:
     capacity: int = 0
     workspace_agents: int = 0
     workspace_terminals: int = 0
+    # Per-pane subdirectories resolved against the workspace root folder.
+    # Empty entries (or shorter-than-count lists) fall back to the root.
+    workspace_agent_subdirs: tuple[str, ...] = ()
+    workspace_terminal_subdirs: tuple[str, ...] = ()
 
     @property
     def kind(self) -> str:
@@ -206,16 +210,20 @@ class AgentOptions:
 
 @dataclass(frozen=True)
 class WorkspaceOptions:
-    """Result of :class:`WorkspaceOptionsModal` — pane counts for the tmux layout.
+    """Result of :class:`WorkspaceOptionsModal` — pane counts + per-pane subdirs.
 
     ``agents`` claude panes in the top row, ``terminals`` bash panes in the
-    bottom row. Merged into :class:`AllocParams` (or passed straight to
-    :func:`launch.launch_workspace` for the attach-to-existing-alloc path)
-    before submission.
+    bottom row. Optional per-pane subdirs are resolved against the workspace
+    root folder (the one collected by :class:`FolderModal`) — empty entries
+    fall back to the root. Merged into :class:`AllocParams` (or passed
+    straight to :func:`launch.launch_workspace` for the attach-to-existing-
+    alloc path) before submission.
     """
 
     agents: int
     terminals: int
+    agent_subdirs: tuple[str, ...] = ()
+    terminal_subdirs: tuple[str, ...] = ()
 
 
 # ``claude remote-control --permission-mode`` choices.
@@ -685,6 +693,8 @@ class WorkspaceOptionsModal(ModalScreen["WorkspaceOptions | str | None"]):
         if prefill is not None:
             init_agents = prefill.agents
             init_terminals = prefill.terminals
+            init_agent_subs = list(prefill.agent_subdirs)
+            init_terminal_subs = list(prefill.terminal_subdirs)
         else:
             saved = state.get_last_workspace_options() or {}
             a = saved.get("agents")
@@ -693,8 +703,25 @@ class WorkspaceOptionsModal(ModalScreen["WorkspaceOptions | str | None"]):
             init_terminals = (
                 t if isinstance(t, int) and t >= 0 else cfg.workspace_terminals
             )
+            saved_a_subs = saved.get("agent_subdirs")
+            saved_t_subs = saved.get("terminal_subdirs")
+            init_agent_subs = (
+                [str(x) for x in saved_a_subs]
+                if isinstance(saved_a_subs, list)
+                else []
+            )
+            init_terminal_subs = (
+                [str(x) for x in saved_t_subs]
+                if isinstance(saved_t_subs, list)
+                else []
+            )
         self._init_agents = str(init_agents)
         self._init_terminals = str(init_terminals)
+        # Cache of subdir values keyed by row (so a user who types into
+        # agent 3, drops the count to 2, then bumps back to 3, sees their
+        # original entry restored instead of an empty input).
+        self._agent_sub_cache: list[str] = list(init_agent_subs)
+        self._terminal_sub_cache: list[str] = list(init_terminal_subs)
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="modal-box", can_focus=False):
@@ -711,9 +738,96 @@ class WorkspaceOptionsModal(ModalScreen["WorkspaceOptions | str | None"]):
                 id="workspace-terminals",
                 type="integer",
             )
+            # Two containers that grow/shrink with the counts. Their
+            # children are Input rows for per-pane subdirs (relative to
+            # the workspace root); empty = root.
+            yield Container(id="agent-subdir-rows", classes="subdir-rows")
+            yield Container(id="terminal-subdir-rows", classes="subdir-rows")
             with Horizontal(id="modal-buttons"):
                 yield Button("Next", id="ok")
                 yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        # Initial population — the count Inputs already hold their values,
+        # so render the corresponding subdir rows from the cache.
+        self._sync_subdir_rows("agent")
+        self._sync_subdir_rows("terminal")
+
+    @on(Input.Changed, "#workspace-agents")
+    def _on_agents_changed(self) -> None:
+        self._sync_subdir_rows("agent")
+
+    @on(Input.Changed, "#workspace-terminals")
+    def _on_terminals_changed(self) -> None:
+        self._sync_subdir_rows("terminal")
+
+    def _parse_count(self, input_id: str) -> int:
+        """Read a non-negative int from a count Input. Garbage → 0."""
+        try:
+            v = int(self.query_one(f"#{input_id}", Input).value or "0")
+        except ValueError:
+            return 0
+        return max(0, v)
+
+    def _sync_subdir_rows(self, kind: str) -> None:
+        """Reconcile the subdir-rows container against the current count.
+
+        Cheap path when the count is unchanged; otherwise:
+          - capture current Input values into the cache (so dropping the
+            count and bumping it back preserves the entries)
+          - remove all rows and remount exactly ``count`` of them,
+            preloaded from the cache
+        """
+        if kind == "agent":
+            count = self._parse_count("workspace-agents")
+            container_id = "agent-subdir-rows"
+            cache = self._agent_sub_cache
+            row_prefix = "agent-subdir"
+            label = "Agent"
+        else:
+            count = self._parse_count("workspace-terminals")
+            container_id = "terminal-subdir-rows"
+            cache = self._terminal_sub_cache
+            row_prefix = "terminal-subdir"
+            label = "Terminal"
+
+        try:
+            container = self.query_one(f"#{container_id}", Container)
+        except Exception:
+            return  # not mounted yet — on_mount will retry
+
+        existing = list(container.query(Input))
+        # Snapshot what the user has typed into the visible rows so it
+        # survives the rebuild.
+        for i, inp in enumerate(existing):
+            while len(cache) <= i:
+                cache.append("")
+            cache[i] = inp.value
+
+        if len(existing) == count:
+            return  # nothing structural to change
+
+        # Tear down and rebuild. Simpler than mount/unmount diffing and
+        # the modal is small enough that the flicker is invisible.
+        for child in list(container.children):
+            child.remove()
+        for i in range(count):
+            value = cache[i] if i < len(cache) else ""
+            # Construct the Horizontal with its children in one go —
+            # mounting children on a not-yet-mounted parent raises
+            # MountError, so we pre-populate before handing the row to
+            # the container.
+            row = Horizontal(
+                Label(f"{label} {i + 1}", classes="subdir-label"),
+                Input(
+                    value=value,
+                    placeholder="subdir (empty = root)",
+                    id=f"{row_prefix}-{i}",
+                    classes="subdir-input",
+                ),
+                classes="subdir-row",
+            )
+            container.mount(row)
 
     @on(Input.Submitted)
     def _advance_focus(self) -> None:
@@ -725,6 +839,21 @@ class WorkspaceOptionsModal(ModalScreen["WorkspaceOptions | str | None"]):
 
     def action_submit(self) -> None:
         self._do_submit()
+
+    def _collect_subdirs(self, kind: str, count: int) -> tuple[str, ...]:
+        """Pull current values from the subdir rows for ``kind``."""
+        prefix = f"{kind}-subdir-"
+        out: list[str] = []
+        for i in range(count):
+            try:
+                inp = self.query_one(f"#{prefix}{i}", Input)
+            except Exception:
+                # Row not (yet) mounted — fall back to cache then empty.
+                cache = self._agent_sub_cache if kind == "agent" else self._terminal_sub_cache
+                out.append(cache[i] if i < len(cache) else "")
+                continue
+            out.append(inp.value.strip())
+        return tuple(out)
 
     def _do_submit(self) -> None:
         try:
@@ -745,8 +874,22 @@ class WorkspaceOptionsModal(ModalScreen["WorkspaceOptions | str | None"]):
                 severity="error",
             )
             return
-        state.set_last_workspace_options(agents=agents, terminals=terminals)
-        self.dismiss(WorkspaceOptions(agents=agents, terminals=terminals))
+        agent_subs = self._collect_subdirs("agent", agents)
+        terminal_subs = self._collect_subdirs("terminal", terminals)
+        state.set_last_workspace_options(
+            agents=agents,
+            terminals=terminals,
+            agent_subdirs=agent_subs,
+            terminal_subdirs=terminal_subs,
+        )
+        self.dismiss(
+            WorkspaceOptions(
+                agents=agents,
+                terminals=terminals,
+                agent_subdirs=agent_subs,
+                terminal_subdirs=terminal_subs,
+            )
+        )
 
     @on(Button.Pressed, "#cancel")
     def _cancel(self) -> None:
@@ -1544,6 +1687,8 @@ class JobsPanel(Container):
                 folder,
                 workspace_agents=result.agents,
                 workspace_terminals=result.terminals,
+                workspace_agent_subdirs=result.agent_subdirs,
+                workspace_terminal_subdirs=result.terminal_subdirs,
             )
             return
         cfg = load()
@@ -1580,6 +1725,8 @@ class JobsPanel(Container):
             result,
             workspace_agents=opts.agents,
             workspace_terminals=opts.terminals,
+            workspace_agent_subdirs=opts.agent_subdirs,
+            workspace_terminal_subdirs=opts.terminal_subdirs,
         )
         self._pending_workspace_opts = None
         self._submit_then_attach("workspace", merged, folder)
@@ -1606,6 +1753,8 @@ class JobsPanel(Container):
         *,
         workspace_agents: int = 0,
         workspace_terminals: int = 0,
+        workspace_agent_subdirs: tuple[str, ...] = (),
+        workspace_terminal_subdirs: tuple[str, ...] = (),
     ) -> None:
         # The agent flow launches detached straight from the worker thread
         # (no UI suspend, no terminal handover) so it never reaches here —
@@ -1630,6 +1779,16 @@ class JobsPanel(Container):
                 if params is not None and params.workspace_terminals > 0
                 else workspace_terminals
             )
+            agent_subdirs = (
+                params.workspace_agent_subdirs
+                if params is not None and params.workspace_agent_subdirs
+                else workspace_agent_subdirs
+            )
+            terminal_subdirs = (
+                params.workspace_terminal_subdirs
+                if params is not None and params.workspace_terminal_subdirs
+                else workspace_terminal_subdirs
+            )
             self._notify_action(
                 f"opening workspace on {alloc.node} ({folder_abs})… detach with Ctrl-b d"
             )
@@ -1640,6 +1799,8 @@ class JobsPanel(Container):
                     cfg,
                     agents=agents or None,
                     terminals=terminals or None,
+                    agent_subdirs=list(agent_subdirs) if agent_subdirs else None,
+                    terminal_subdirs=list(terminal_subdirs) if terminal_subdirs else None,
                 )
             self._notify_action(f"returned from {alloc.node} (workspace still running)")
             self.refresh_jobs()
@@ -1940,6 +2101,19 @@ Select:focus > SelectCurrent {
    margin-bottom. The two Selects inside #partition-row already get spacing
    from the row's own padding-bottom — overriding that here would double up. */
 #time { margin-bottom: 1; }
+
+/* Per-pane subdir rows in the Workspace-options modal. The container
+   collapses to zero height when empty (no panes yet) and grows as rows
+   are mounted; each row is a label + input on the same line. */
+.subdir-rows { height: auto; }
+.subdir-row { height: auto; padding-bottom: 0; }
+.subdir-row .subdir-label {
+    width: 12;
+    content-align: left middle;
+    color: ansi_bright_black;
+    padding-right: 1;
+}
+.subdir-row .subdir-input { width: 1fr; margin-bottom: 0; }
 
 #modal-buttons {
     height: auto;

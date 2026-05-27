@@ -35,6 +35,23 @@ def resolve_folder(folder: str | None, cfg: Config) -> str:
     return f"{home}/{folder}"
 
 
+def _resolve_pane_folder(root: str, subdir: str | None) -> str:
+    """Resolve a per-pane subdir against the workspace root.
+
+    - empty/None → use ``root`` as-is
+    - absolute → use as-is (overrides root)
+    - relative → joined under ``root``
+
+    Mirrors :func:`resolve_folder` but anchored on the workspace root
+    instead of ``cfg.effective_home``.
+    """
+    if not subdir:
+        return root
+    if subdir.startswith("/"):
+        return subdir
+    return f"{root.rstrip('/')}/{subdir}"
+
+
 def _remote_preamble(folder: str) -> str:
     """Build the ``cd … && [source .venv] && PATH=…`` prefix for compute-node commands.
 
@@ -204,6 +221,8 @@ def launch_workspace(
     *,
     agents: int | None = None,
     terminals: int | None = None,
+    agent_subdirs: list[str] | None = None,
+    terminal_subdirs: list[str] | None = None,
 ) -> int:
     """Open (or reattach to) a tmux workspace on the compute node.
 
@@ -234,6 +253,14 @@ def launch_workspace(
     Per-job socket (``rci-ws-<jobid>``) so workspaces on different
     allocations don't share a daemon (and a wrong cgroup).
 
+    Per-pane workdirs: ``agent_subdirs`` / ``terminal_subdirs`` are
+    optional lists of per-pane subdirectories. Each entry is resolved
+    against ``folder`` (the root). Empty string ⇒ use root unchanged;
+    absolute path ⇒ overrides the root. Lists shorter than the pane
+    count are padded with ``""`` (root); longer lists are truncated.
+    Like the pane counts, these only apply on first build — reattaches
+    inherit the existing layout.
+
     Idempotent: subsequent calls reattach to the existing session — the
     ``agents`` / ``terminals`` knobs only apply when the session is being
     built. Closing every pane exits the session, which exits the holder
@@ -251,14 +278,26 @@ def launch_workspace(
     if agents == 0 and terminals == 0:
         terminals = 1
 
+    # Pad/truncate per-pane subdirs to match the final counts. Missing
+    # entries default to "" which resolves back to the root folder.
+    raw_agent_subdirs = list(agent_subdirs or [])
+    raw_terminal_subdirs = list(terminal_subdirs or [])
+    raw_agent_subdirs = (raw_agent_subdirs + [""] * agents)[:agents]
+    raw_terminal_subdirs = (raw_terminal_subdirs + [""] * terminals)[:terminals]
+    agent_folders = [_resolve_pane_folder(folder, s) for s in raw_agent_subdirs]
+    terminal_folders = [_resolve_pane_folder(folder, s) for s in raw_terminal_subdirs]
+
     sock = f"rci-ws-{alloc.jobid}"
     sess = "main"
     sock_q = shlex.quote(sock)
     sess_q = shlex.quote(sess)
     jid_q = shlex.quote(alloc.jobid)
-    folder_q = shlex.quote(folder)
-    claude_pane = shlex.quote(_pane_cmd(folder, command="claude"))
-    bash_pane = shlex.quote(_pane_cmd(folder))
+
+    def claude_pane_for(f: str) -> str:
+        return shlex.quote(_pane_cmd(f, command="claude"))
+
+    def bash_pane_for(f: str) -> str:
+        return shlex.quote(_pane_cmd(f))
 
     # Inner script runs inside the long-lived srun step. Builds the panes
     # then idles in the has-session poll loop — the loop is the cgroup
@@ -282,7 +321,13 @@ def launch_workspace(
     # since tmux renumbers panes by visual position after splits and a
     # literal ``-t .N`` would otherwise hit the wrong cell.
     inner_lines: list[str] = []
-    first_pane = claude_pane if agents > 0 else bash_pane
+    if agents > 0:
+        first_folder = agent_folders[0]
+        first_pane = claude_pane_for(first_folder)
+    else:
+        first_folder = terminal_folders[0]
+        first_pane = bash_pane_for(first_folder)
+    first_folder_q = shlex.quote(first_folder)
     # ``-f /dev/null`` starts the workspace's tmux server with NO config
     # loaded — neither ~/.tmux.conf nor /etc/tmux.conf. Diagnosed cause:
     # user configs in this environment include a setting that kills the
@@ -296,7 +341,7 @@ def launch_workspace(
     # already-loaded (empty) config.
     inner_lines.append(
         f"tmux -L {sock_q} -f /dev/null new-session -d -s {sess_q} "
-        f"-c {folder_q} {first_pane}"
+        f"-c {first_folder_q} {first_pane}"
     )
     # Force ``destroy-unattached off`` on our session: workspace lifetime is
     # governed by the holder srun's ``while has-session`` loop, not by
@@ -340,8 +385,10 @@ def launch_workspace(
         # Vertical split for the bottom (terminals) row. ``-p 30`` matches
         # the historic 70/30 top:bottom ratio; tunable in a follow-up if
         # we ever want it config-driven.
+        bottom_first_folder = terminal_folders[0]
         inner_lines.append(
-            f"tmux -L {sock_q} split-window -v -p 30 -t {sess_q} -c {folder_q} {bash_pane}"
+            f"tmux -L {sock_q} split-window -v -p 30 -t {sess_q} "
+            f"-c {shlex.quote(bottom_first_folder)} {bash_pane_for(bottom_first_folder)}"
         )
         bottom_first = "1"  # creation-order index of the first terminal
     else:
@@ -354,11 +401,14 @@ def launch_workspace(
     # else .0 (single-row terminals-only layout).
     top_first = "0"
 
-    # Add remaining agents to the top row.
-    for _ in range(max(0, agents - 1)):
+    # Add remaining agents to the top row. Each extra agent pulls its
+    # own folder from agent_folders by index (agent_folders[i] for the
+    # i-th agent, i ≥ 1).
+    for i in range(1, agents):
+        pane_folder = agent_folders[i]
         inner_lines.append(
             f"tmux -L {sock_q} split-window -h -t {sess_q}.{top_first} "
-            f"-c {folder_q} {claude_pane}"
+            f"-c {shlex.quote(pane_folder)} {claude_pane_for(pane_folder)}"
         )
     if agents >= 2:
         # Even the agent row in one shot — ``select-layout -E`` spreads
@@ -369,13 +419,16 @@ def launch_workspace(
         )
 
     # Add remaining terminals to the bottom row (or the only row when
-    # agents=0).
+    # agents=0). The first terminal was already placed (either as the
+    # window's first pane when agents=0, or by the vertical split above);
+    # extras start at terminal_folders[1].
     terminal_anchor = bottom_first if bottom_first is not None else top_first
     if terminals >= 1:
-        for _ in range(max(0, terminals - 1)):
+        for i in range(1, terminals):
+            pane_folder = terminal_folders[i]
             inner_lines.append(
                 f"tmux -L {sock_q} split-window -h -t {sess_q}.{terminal_anchor} "
-                f"-c {folder_q} {bash_pane}"
+                f"-c {shlex.quote(pane_folder)} {bash_pane_for(pane_folder)}"
             )
         if terminals >= 2:
             inner_lines.append(

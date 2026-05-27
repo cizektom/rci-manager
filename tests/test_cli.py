@@ -297,6 +297,64 @@ def test_alloc_consuming_commands_wire_through(monkeypatch, cmd, launch_attr) ->
     }
 
 
+def test_workspace_cli_passes_per_pane_subdirs(monkeypatch) -> None:
+    """``rci workspace --agent-dir … --terminal-dir …`` reaches the launcher
+    as ``agent_subdirs`` / ``terminal_subdirs`` lists in argument order."""
+    captured: dict = {}
+
+    def fake_launch(a, folder, cfg, **kwargs):
+        captured.update(
+            folder=folder,
+            agent_subdirs=kwargs.get("agent_subdirs"),
+            terminal_subdirs=kwargs.get("terminal_subdirs"),
+            agents=kwargs.get("agents"),
+            terminals=kwargs.get("terminals"),
+        )
+        return 0
+
+    monkeypatch.setattr(launch, "launch_workspace", fake_launch)
+    monkeypatch.setattr(
+        alloc_mod, "select_or_submit",
+        lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "workspace", "projects",
+            "-a", "2", "-T", "1",
+            "--agent-dir", "sam2rl",
+            "--agent-dir", "deep_rl",
+            "--terminal-dir", "logs",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert captured["folder"] == "/home/cizekto2/projects"
+    assert captured["agents"] == 2
+    assert captured["terminals"] == 1
+    assert captured["agent_subdirs"] == ["sam2rl", "deep_rl"]
+    assert captured["terminal_subdirs"] == ["logs"]
+
+
+def test_workspace_cli_omits_subdirs_when_unset(monkeypatch) -> None:
+    """No ``--agent-dir`` / ``--terminal-dir`` ⇒ launcher sees ``None`` and
+    falls back to the historical all-on-root behavior."""
+    captured: dict = {}
+
+    def fake_launch(a, folder, cfg, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(launch, "launch_workspace", fake_launch)
+    monkeypatch.setattr(
+        alloc_mod, "select_or_submit",
+        lambda cfg, **kw: alloc_mod.Allocation(node="g05", jobid="9999"),
+    )
+    result = runner.invoke(app, ["workspace", "projects"])
+    assert result.exit_code == 0, result.stdout
+    assert captured.get("agent_subdirs") is None
+    assert captured.get("terminal_subdirs") is None
+
+
 # ── first-run setup gating ──────────────────────────────────────────────────
 
 

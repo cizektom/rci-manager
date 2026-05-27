@@ -82,7 +82,7 @@ fall back to `--help`.
 | `rci shell  [DIR] [--gpu]`           | interactive bash on the compute node               |
 | `rci editor [DIR] [--gpu]`           | VS Code Remote-SSH (WSL → Windows `code.cmd`)      |
 | `rci agent  [DIR] [--gpu] [...]`     | spawn `agent-N` + run `claude remote-control`      |
-| `rci workspace [DIR] [--gpu] [-a N] [-T M]` | tmux workspace (N claude panes + M bash panes) |
+| `rci workspace [DIR] [--gpu] [-a N] [-T M] [--agent-dir SUB ...] [--terminal-dir SUB ...]` | tmux workspace (N claude panes + M bash panes; optional per-pane subdirs) |
 | `rci alloc  [--gpu]`                 | prints `<node> <jobid>` — scripting-friendly       |
 | `rci port LOCAL[:REMOTE]`            | local → compute-node port forward (Ctrl-C to stop) |
 | `rci tui`                            | Textual TUI dashboard                              |
@@ -128,6 +128,10 @@ rci workspace                  # CPU or strongest existing alloc, $home
 rci workspace sam2rl           # under <home>/sam2rl
 rci workspace sam2rl --gpu     # require/spawn a GPU alloc
 rci workspace -a 3 -T 2        # 3 claude panes on top, 2 bash on bottom
+# Per-pane workdirs (root + subdirs): root is `projects/`, agents run in
+# ~/projects/sam2rl and ~/projects/deep_rl, terminal in ~/projects/logs.
+rci workspace projects -a 2 -T 1 \
+    --agent-dir sam2rl --agent-dir deep_rl --terminal-dir logs
 ```
 
 Default layout (2 agents + 1 terminal):
@@ -154,6 +158,13 @@ and how many bash panes fill the bottom row. Defaults
 ship at 2 + 1; the TUI also remembers your last choice across sessions.
 Pane counts only matter the first time the session is built — reattaches
 inherit the existing layout.
+
+**Per-pane workdirs.** The folder argument is the workspace *root*; each
+pane optionally points at a subdir under it. CLI: repeat `--agent-dir SUB`
+and `--terminal-dir SUB` in pane order (empty/missing entries fall back to
+the root; absolute paths override it). TUI: the Workspace options popup
+renders one subdir Input per pane that grows/shrinks as you adjust the
+counts. Same first-build-only caveat as pane counts.
 
 **Disconnect-safe.** The tmux daemon lives in a long-lived
 `srun --jobid --overlap` step that holds the job's cgroup open. Detach with

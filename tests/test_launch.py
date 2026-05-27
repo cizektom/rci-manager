@@ -456,3 +456,127 @@ def test_launch_workspace_falls_back_to_cfg_defaults(
     setup_script = calls[0]["stdin"]
     assert setup_script.count("claude; while true; do bash -i") == 2
     assert setup_script.count("while true; do bash -i; sleep 0.1; done") == 3
+
+
+# ── per-pane subdir resolution ─────────────────────────────────────────────
+
+
+def test_resolve_pane_folder_rules() -> None:
+    """Empty/None → root, absolute → as-is, relative → joined under root."""
+    assert launch._resolve_pane_folder("/home/u/projects", "") == "/home/u/projects"
+    assert launch._resolve_pane_folder("/home/u/projects", None) == "/home/u/projects"
+    assert (
+        launch._resolve_pane_folder("/home/u/projects", "sam2rl")
+        == "/home/u/projects/sam2rl"
+    )
+    assert (
+        launch._resolve_pane_folder("/home/u/projects", "/scratch/exp42")
+        == "/scratch/exp42"
+    )
+    # Trailing slash on root is tolerated — no double-slash in the join.
+    assert (
+        launch._resolve_pane_folder("/home/u/projects/", "sam2rl")
+        == "/home/u/projects/sam2rl"
+    )
+
+
+def test_launch_workspace_per_pane_subdirs(monkeypatch, cfg: Config) -> None:
+    """Per-pane subdirs become the ``-c`` argument on each pane's split.
+
+    With root ``/home/u/projects`` and ``agent_subdirs=['sam2rl', 'deep_rl']``,
+    pane 0 (first claude) launches in ``…/sam2rl``, pane 2 (second claude)
+    in ``…/deep_rl``. Terminal subdir falls through to the root when empty.
+    """
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/u/projects",
+        cfg,
+        agents=2,
+        terminals=1,
+        agent_subdirs=["sam2rl", "deep_rl"],
+        terminal_subdirs=[""],  # empty ⇒ use root
+    )
+    setup_script = calls[0]["stdin"]
+    # First agent pane: new-session anchored on sam2rl.
+    assert (
+        "new-session -d -s main -c /home/u/projects/sam2rl" in setup_script
+    )
+    # Bottom-row terminal stays on the root.
+    assert "split-window -v -p 30 -t main -c /home/u/projects " in setup_script
+    # Second agent split-h targets pane .0, anchored on deep_rl.
+    assert (
+        "split-window -h -t main.0 -c /home/u/projects/deep_rl" in setup_script
+    )
+    # No leakage of the wrong root in either pane.
+    assert "split-window -h -t main.0 -c /home/u/projects/sam2rl" not in setup_script
+
+
+def test_launch_workspace_subdirs_pad_to_count(monkeypatch, cfg: Config) -> None:
+    """Short subdir lists are padded with the root; long lists are truncated."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/u/projects",
+        cfg,
+        agents=3,
+        terminals=0,
+        agent_subdirs=["a"],  # only 1 entry for 3 panes ⇒ 2 missing → root
+    )
+    setup_script = calls[0]["stdin"]
+    # First agent pane is on the supplied subdir.
+    assert "new-session -d -s main -c /home/u/projects/a" in setup_script
+    # The two additional agent panes fall back to the plain root — count
+    # ``-c /home/u/projects `` (trailing space, no ``/a`` suffix).
+    assert setup_script.count("-c /home/u/projects ") == 2
+    # And there's exactly one occurrence of the subdir form.
+    assert setup_script.count("-c /home/u/projects/a") == 1
+    # Two extra splits (for agents 2 and 3).
+    assert setup_script.count("split-window -h -t main.0") == 2
+
+
+def test_launch_workspace_absolute_subdir_overrides_root(
+    monkeypatch, cfg: Config
+) -> None:
+    """An absolute path in a subdir entry overrides the workspace root."""
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/u/projects",
+        cfg,
+        agents=0,
+        terminals=2,
+        terminal_subdirs=["/scratch/exp42", "logs"],
+    )
+    setup_script = calls[0]["stdin"]
+    # First terminal (and only pane in this layout) starts at /scratch/exp42.
+    assert "new-session -d -s main -c /scratch/exp42" in setup_script
+    # Second terminal stays under the root.
+    assert (
+        "split-window -h -t main.0 -c /home/u/projects/logs" in setup_script
+    )
+
+
+def test_launch_workspace_subdirs_default_to_root_when_omitted(
+    monkeypatch, cfg: Config
+) -> None:
+    """Omitting subdirs keeps the historical behavior: every pane on the root.
+
+    Belt-and-braces test that the new kwargs are truly optional — protects
+    callers that hadn't been updated yet.
+    """
+    calls = _patch_ssh_multi(monkeypatch)
+    launch.launch_workspace(
+        Allocation(node="g05", jobid="5555"),
+        "/home/u/projects",
+        cfg,
+        agents=2,
+        terminals=1,
+    )
+    setup_script = calls[0]["stdin"]
+    # No subdir suffix anywhere — every ``-c`` is exactly the root.
+    assert "/home/u/projects/" not in setup_script
+    # 3 `-c` anchors: 1 new-session (first agent) + 1 vertical split (first
+    # terminal) + 1 horizontal split (second agent). select-layout has no
+    # ``-c``.
+    assert setup_script.count("-c /home/u/projects") == 3

@@ -1470,6 +1470,120 @@ async def test_workspace_options_modal_persists_across_sessions(
         assert scr2.query_one("#workspace-terminals", Input).value == "2"
 
 
+async def test_workspace_options_modal_renders_subdir_rows(
+    monkeypatch, tmp_path
+) -> None:
+    """Subdir Input rows track the agent/terminal counts: one row per pane,
+    correctly id'd and pre-filled from the prefill payload."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import WorkspaceOptions, WorkspaceOptionsModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            WorkspaceOptionsModal(
+                Config(),
+                prefill=WorkspaceOptions(
+                    agents=2,
+                    terminals=1,
+                    agent_subdirs=("sam2rl", "deep_rl"),
+                    terminal_subdirs=("logs",),
+                ),
+            ),
+            lambda _: None,
+        )
+        await pilot.pause()
+        scr = app.screen
+        # One Input per pane, IDs follow the row-prefix-i scheme.
+        assert scr.query_one("#agent-subdir-0", Input).value == "sam2rl"
+        assert scr.query_one("#agent-subdir-1", Input).value == "deep_rl"
+        assert scr.query_one("#terminal-subdir-0", Input).value == "logs"
+
+
+async def test_workspace_options_modal_subdir_rows_grow_with_count(
+    monkeypatch, tmp_path
+) -> None:
+    """Bumping the agent count adds matching subdir rows, preserving any
+    values the user already typed (cached by index across rebuilds)."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli.tui import WorkspaceOptionsModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(WorkspaceOptionsModal(Config()), lambda _: None)
+        await pilot.pause()
+        scr = app.screen
+        # Reset and set counts so we know the starting state.
+        scr.query_one("#workspace-agents", Input).value = "2"
+        scr.query_one("#workspace-terminals", Input).value = "0"
+        await pilot.pause()
+        # Two agent rows now exist.
+        scr.query_one("#agent-subdir-0", Input).value = "alpha"
+        scr.query_one("#agent-subdir-1", Input).value = "beta"
+        # Drop to 1 agent: row 1 disappears, alpha is preserved.
+        scr.query_one("#workspace-agents", Input).value = "1"
+        await pilot.pause()
+        assert scr.query_one("#agent-subdir-0", Input).value == "alpha"
+        assert len(scr.query("#agent-subdir-1")) == 0
+        # Bump back to 2: beta restored from the cache.
+        scr.query_one("#workspace-agents", Input).value = "2"
+        await pilot.pause()
+        assert scr.query_one("#agent-subdir-1", Input).value == "beta"
+
+
+async def test_workspace_options_modal_submit_includes_subdirs(
+    monkeypatch, tmp_path
+) -> None:
+    """``_do_submit`` reads the per-pane subdir Inputs into the returned
+    :class:`WorkspaceOptions` and persists them in state.json."""
+    from textual.widgets import Input
+
+    from rci_cli.config import Config
+    from rci_cli import state as state_mod
+    from rci_cli.tui import WorkspaceOptions, WorkspaceOptionsModal
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    captured: dict[str, WorkspaceOptions | None] = {"opts": None}
+
+    app = RciApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            WorkspaceOptionsModal(Config()),
+            lambda o: captured.update(opts=o),
+        )
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#workspace-agents", Input).value = "2"
+        scr.query_one("#workspace-terminals", Input).value = "1"
+        await pilot.pause()
+        scr.query_one("#agent-subdir-0", Input).value = "sam2rl"
+        scr.query_one("#agent-subdir-1", Input).value = "deep_rl"
+        scr.query_one("#terminal-subdir-0", Input).value = "logs"
+        scr._do_submit()
+        await pilot.pause()
+
+    o = captured["opts"]
+    assert o is not None
+    assert o.agent_subdirs == ("sam2rl", "deep_rl")
+    assert o.terminal_subdirs == ("logs",)
+
+    saved = state_mod.get_last_workspace_options()
+    assert saved is not None
+    assert saved.get("agent_subdirs") == ["sam2rl", "deep_rl"]
+    assert saved.get("terminal_subdirs") == ["logs"]
+
+
 async def test_workspace_options_step_advances_to_resources_modal(
     monkeypatch, tmp_path
 ) -> None:

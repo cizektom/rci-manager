@@ -306,6 +306,20 @@ def workspace(
         int,
         typer.Option("-T", "--terminals", help="bash panes in the bottom row"),
     ] = -1,
+    agent_dirs: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--agent-dir",
+            help="per-pane subdir under the workspace root (repeat; order = pane order)",
+        ),
+    ] = None,
+    terminal_dirs: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--terminal-dir",
+            help="per-pane subdir under the workspace root (repeat; order = pane order)",
+        ),
+    ] = None,
 ) -> None:
     """Open a tmux workspace on the compute node (claude panes + bash).
 
@@ -317,6 +331,16 @@ def workspace(
     in ``~/.config/rci-cli/config.toml`` (2 + 1). They only matter the
     first time the session is built — reattaches inherit the existing
     layout.
+
+    Per-pane workdirs: pass ``--agent-dir`` / ``--terminal-dir`` once per
+    pane (in pane order) to point each pane at a subdir under the
+    workspace root. Example::
+
+        rci workspace projects -a 2 -T 1 \\
+            --agent-dir sam2rl --agent-dir deep_rl --terminal-dir logs
+
+    Empty / missing entries fall back to the root; absolute paths
+    override it.
     """
     cfg = _cfg()
     a = _require_alloc(
@@ -331,6 +355,8 @@ def workspace(
             cfg,
             agents=agents if agents >= 0 else None,
             terminals=terminals if terminals >= 0 else None,
+            agent_subdirs=agent_dirs or None,
+            terminal_subdirs=terminal_dirs or None,
         )
     )
 
