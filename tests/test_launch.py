@@ -250,6 +250,8 @@ def test_launch_workspace_disables_destroy_unattached(monkeypatch, cfg: Config) 
     # We start the server with ``-f /dev/null`` so the user's prefix binding
     # from ~/.tmux.conf is lost; restore Ctrl-Space explicitly.
     assert "set-option -g prefix C-Space" in setup_script
+    # And their custom ``prefix Q`` ⇒ kill-session binding.
+    assert "bind-key Q kill-session" in setup_script
     # Mouse: enable for wheel scrollback + drag/dblclick selection, but
     # disable ``set-clipboard`` so copy-selection-and-cancel stays in
     # tmux's internal paste buffer and doesn't emit OSC 52 (which

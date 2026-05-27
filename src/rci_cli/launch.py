@@ -314,6 +314,12 @@ def launch_workspace(
     inner_lines.append(
         f"tmux -L {sock_q} set-option -g prefix C-Space"
     )
+    # User's custom ``prefix Q`` ⇒ kill-session binding, also lost when we
+    # dropped the user conf. Restore it so muscle memory keeps working.
+    # Overrides the default ``prefix Q`` (display-panes).
+    inner_lines.append(
+        f"tmux -L {sock_q} bind-key Q kill-session"
+    )
     # Mouse: ``mouse on`` for wheel scrollback + native drag/double-click
     # selection. The death triggered by ``copy-selection-and-cancel`` on
     # this cluster's tmux is attributable to the default
